@@ -256,7 +256,7 @@
         <div class="col-hero">英雄</div>
         <div class="col-num">场次</div>
         <div class="col-num">胜率</div>
-        <div class="col-power">战力</div>
+        <div class="col-power">{{powerLabel}}</div>
     </div>
 
     {{each heroes hero index}}
@@ -284,7 +284,11 @@
     </div>
     {{/each}}
 
-    <div class="footer">GloryOfKings-Plugin · 我的英雄 · 按战力取前 {{shownCount}}（#我的英雄 20 可改数量）</div>
+    <div class="footer">
+        GloryOfKings-Plugin · 我的英雄 ·
+        {{if powerLabel === '最高战力'}}战力为历史最高值，称号为拿到该战力时的{{else}}战力与称号为当前值{{/if}} ·
+        按战力取前 {{shownCount}}（#我的英雄 20 可改数量）
+    </div>
 </body>
 
 </html>

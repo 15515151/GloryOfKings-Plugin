@@ -1,12 +1,20 @@
-// 我的英雄：数据取自游戏侧 /play/h5getherolist（全部竞技模式的生涯累计），一次请求拿全量英雄。
+// 我的英雄：主表取自游戏侧 /play/h5getherolist（全部竞技模式的生涯累计），一次请求拿全量英雄。
 // 和 heroList.js 的区别：那边走营地赛季页只有当前赛季 top5，这里是账号拥有的全部英雄（实测一个号 132 条）。
-// heroFightPower 实测与营地侧 /game/profile/herolist 的同名字段完全一致（两个号 × 4 英雄同时刻比对），
-// 营地 App「我的英雄」页把这一列标成「最高战力」，所以这里沿用该叫法。
-// 真正的近 30 天战力峰值在 /gametoolbox/hero/record/pagedetails 的 powerData 里，但要逐英雄请求，成本高没用。
-// 荣耀称号也不在这个接口里（同样要逐英雄拉 pagedetails），所以这里改用熟练度等级做副标。
+//
+// 「战力」列是**历史最高战力**（营地 App 那页右上角「⇄ 历史赛季」的口径），
+// 来自营地侧 /hero/getseasonusaullyherolist（seasonId=0），不是 h5getherolist 里的当前值。
+// 那个接口顺带把「拿历史最高时的荣耀称号」也放在 honorTitle 里给了，于是以前那套逐英雄拉
+// pagedetails 扫称号的流程整个去掉了 —— 实测历史口径的称号是当前口径的超集：
+// 有 honorTitle 的英雄，历史那条必定不比 pagedetails 给的差（孙权「中国澳门第58」vs「台北第99」），
+// 当前已掉榜的（戈娅）历史接口照样给得出来；而 honorTitle 为 null 的，pagedetails 实测也一律为空。
+// 顺带 #我的英雄 15 从十几秒（15 个英雄串行请求）降到 2 个请求。
+//
+// 两个接口靠 heroId 关联，主表必须用 h5getherolist：它有 winNum 能算总胜率，
+// playNum 也是营地那页的口径（孙权 2201），而历史接口的 playNum 是另一套（同英雄 1182），
+// 所以只从历史接口补 maxHeroFightPower 与称号两个字段。
+// 历史接口拿不到时（没绑角色 / 接口异常）退回显示当前战力，模板列名也跟着变，保证图还能出。
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { ApiService, readYamlFile, getLocalImage, Button, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
-import { fetchHeroMedals, primaryMedal } from '../utils/heroMedals.js'
 import path from 'path'
 import { PluginData, PluginPath } from '#components'
 
@@ -99,15 +107,26 @@ export class MyHeroList extends plugin {
       return
     }
 
+    // 历史最高战力 + 历史口径称号，一次请求拿全；失败不抛错，下面自动退回当前战力
+    const history = await this.fetchHistoryPower(ID, userId)
+
+    const merged = played.map(hero => {
+      const hit = history.byHero.get(String(hero.heroId))
+      const maxPower = Number(hit?.maxPower) || 0
+      return {
+        ...hero,
+        displayPower: maxPower || Number(hero.heroFightPower) || 0,
+        honorText: hit?.honor || ''
+      }
+    })
+
     // 默认按战力降序（营地那页「最高战力」列排序），战力相同的场次多的排前面
-    const sorted = [...played].sort(
-      (a, b) => Number(b.heroFightPower) - Number(a.heroFightPower) || Number(b.playNum) - Number(a.playNum)
+    const sorted = [...merged].sort(
+      (a, b) => b.displayPower - a.displayPower || Number(b.playNum) - Number(a.playNum)
     )
     const picked = sorted.slice(0, limit)
 
-    // 荣耀称号不在英雄列表接口里，要按角色逐英雄拉，拉不到就不显示，不影响出图
-    const medals = await this.fetchMedals(ID, picked, userId)
-    const heroes = await Promise.all(picked.map(hero => this.buildHeroCard(hero, medals.get(String(hero.heroId)))))
+    const heroes = await Promise.all(picked.map(hero => this.buildHeroCard(hero)))
 
     const totalPlay = played.reduce((sum, hero) => sum + Number(hero.playNum || 0), 0)
     const totalWin = played.reduce((sum, hero) => sum + Number(hero.winNum || 0), 0)
@@ -120,6 +139,8 @@ export class MyHeroList extends plugin {
       heroCount: played.length,
       ownCount: Number(res?.data?.hasData?.heroNum) || played.length,
       shownCount: heroes.length,
+      // 历史接口拿不到时图上要如实标成当前口径，不能默认写「最高战力」
+      powerLabel: history.ok ? '最高战力' : '战力',
       totalPlay,
       totalRate: totalPlay ? `${((totalWin / totalPlay) * 100).toFixed(1)}%` : '—',
       heroes
@@ -129,47 +150,47 @@ export class MyHeroList extends plugin {
   }
 
   /**
-   * 逐英雄拉荣耀称号（「天河区第25虞姬」这种）。
-   * 营地把称号放在单英雄战绩详情里，列表接口没有，所以只能一个一个拉；
-   * 具体的请求、串行间隔与 30 分钟缓存都在 utils/heroMedals.js，#称号墙 共用同一份缓存。
-   * 注意这里拿到的是**当前**称号，营地 App「历史赛季」页显示的是历史最高时的称号，
-   * 高战英雄可能差一个级别（实测同一英雄：这里「天河区第17孙权」、营地页「中国澳门第58孙权」）。
-   * @returns {Promise<Map<string, string>>} heroId → 称号文本，没上榜或拿不到的英雄不进 Map
+   * 拉「历史最高战力」与配套的历史口径称号，一次请求拿全。
+   * seasonId 传 0 就是营地那页的「历史赛季」（-1 是当前赛季，只回本赛季用过的几个英雄）。
+   * 取不到时不抛错：返回空 Map，调用方退回当前战力、模板列名也跟着变，保证图还能出。
+   * @param {string} ID 营地ID
+   * @param {string|number} userId 发起查询的机器人用户ID
+   * @returns {Promise<{ok: boolean, byHero: Map<string, {maxPower: number, honor: string}>}>}
    */
-  async fetchMedals(ID, heroes, userId) {
-    const result = new Map()
+  async fetchHistoryPower(ID, userId) {
+    const result = { ok: false, byHero: new Map() }
 
+    // roleId 只能从 profile 拿，不是营地ID
     let roleId = ''
-    let role = {}
     try {
       const profile = await ApiService.getProfile(ID, String(userId))
-      roleId = profile?.data?.targetRoleId
-      role = (profile?.data?.roleList || []).find(item => String(item.roleId) === String(roleId)) || {}
+      roleId = profile?.data?.targetRoleId || ''
     } catch (error) {
-      logger.error(`[我的英雄] 取角色信息失败，跳过荣耀称号: ${error.message}`)
+      logger.error(`[我的英雄] 取角色信息失败，战力退回当前值: ${error.message}`)
       return result
     }
-
     if (!roleId) return result
 
-    const medals = await fetchHeroMedals(roleId, heroes, {
-      roleName: role.roleName,
-      serverId: role.serverId,
-      campId: ID,
-      botUserId: String(userId)
-    })
-
-    // medalList 可能有多条（市级榜 / 小范围榜各一条），营地按返回顺序展示，这里取第一条
-    for (const [heroId, list] of medals) {
-      const medal = primaryMedal(list)
-      if (medal) result.set(heroId, medal)
+    try {
+      const res = await ApiService.getSeasonUsuallyHeroList(roleId, String(userId), 0)
+      for (const item of res?.data?.list || []) {
+        const heroId = String(item?.heroId ?? '')
+        if (!heroId) continue
+        result.byHero.set(heroId, {
+          maxPower: Number(item.maxHeroFightPower) || 0,
+          honor: String(item?.honorTitle?.desc?.full || '')
+        })
+      }
+      result.ok = result.byHero.size > 0
+    } catch (error) {
+      logger.error(`[我的英雄] 历史最高战力获取失败，战力退回当前值: ${error.message}`)
     }
 
     return result
   }
 
   /** 整理成模板要的结构，头像转 base64 防截图时外链加载失败 */
-  async buildHeroCard(hero, medal = '') {
+  async buildHeroCard(hero) {
     const { name, subName } = splitHeroName(hero.name)
     const level = Number(hero.skilledLevel) || 0
 
@@ -179,14 +200,14 @@ export class MyHeroList extends plugin {
       // heroTypes 是数组（瑶是 ["辅助","法师"]），对应营地那页英雄名下面的定位
       heroType: (hero.heroTypes || []).join('/') || hero.heroType || '',
       skilledText: level ? (SKILLED_NAME[level] ? `${SKILLED_NAME[level]}` : `Lv.${level}`) : '',
-      // 称号原样展示（「天河区第25虞姬」），营地那页也是带英雄名的完整文本
-      honorText: medal || '',
+      // 称号取的是拿历史最高战力时的那个，原样展示（「中国澳门第58孙权」）
+      honorText: hero.honorText || '',
       imgUrl: await this.resolveHeroImage(hero),
       playNum: Number(hero.playNum) || 0,
       // 这个接口的 winRate 已经是 "53.8%" 这种字符串，不用再换算
       winRate: hero.winRate || '—',
-      fightPower: Number(hero.heroFightPower) || 0,
-      fightColor: fightColor(hero.heroFightPower)
+      fightPower: hero.displayPower,
+      fightColor: fightColor(hero.displayPower)
     }
   }
 

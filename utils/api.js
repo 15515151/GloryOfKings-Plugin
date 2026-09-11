@@ -1127,6 +1127,26 @@ class ApiService {
     }, this.#toString(ID), requesterBotUserId)
   }
 
+  /**
+   * 获取「我的英雄 · 历史赛季」页数据（营地 App 那页右上角可切赛季，含历史最高战力）。
+   * 注意路径里的 usaully 是营地自己的拼写（不是 usually），别当笔误改掉。
+   * seasonId：0=「历史赛季」（跨赛季峰值，实测一个号 90 个英雄里 32 个有值），
+   * -1=当前赛季（只回本赛季用过的几个英雄），再往前的负数服务端一律返回 0。
+   * 单条含 heroFightPower（当前战力）/ maxHeroFightPower（历史最高战力）/ honorTitle（拿历史最高时的荣耀称号）。
+   * 和 getGameHeroList 的差别：那边是「当前」战力且没有称号、没有 winNum 之外的口径差异，
+   * 这边一次请求就能拿到全部英雄的历史峰值称号，不用逐英雄拉 pagedetails。
+   * @param {string|number} roleId 角色 ID（来自 profile.data.targetRoleId，不是营地 ID）
+   * @param {string} requesterBotUserId 发起查询的机器人用户 ID
+   * @param {number} [seasonId=0] 赛季，0=历史赛季
+   */
+  async getSeasonUsuallyHeroList(roleId, requesterBotUserId = '', seasonId = 0) {
+    return this.#makeAuthRequest('/hero/getseasonusaullyherolist', {
+      recommendPrivacy: 0,
+      seasonId,
+      roleId: this.#toString(roleId)
+    }, roleId, requesterBotUserId)
+  }
+
   #buildGameFormBody(auth, extraFields = {}) {
     const fields = {
       cChannelId: auth.cChannelId,
