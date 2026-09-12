@@ -705,6 +705,49 @@ export async function probeShare (cfg = readShareConfig()) {
   }
 }
 
+/**
+ * 直接问库：这个 QQ 在库里有哪些共享记录。
+ *
+ * 给 `#营地共享库查` 用 —— 排查「对方说查不到我」时，先确认库里到底有没有、
+ * 有的话是哪些营地ID。比来回猜「是不是缓存」「是不是要多等一会」快得多。
+ *
+ * @returns {Promise<{found: boolean, campIds?: string[], current?: string, updatedAt?: number, error?: string}>}
+ */
+export async function querySharedBind (userId) {
+  const qq = String(userId ?? '').trim()
+  if (!qq) return { found: false, error: '缺少 QQ 号' }
+
+  const cfg = readShareConfig()
+  if (!cfg.enabled || !cfg.apiUrl || !cfg.token) {
+    return { found: false, error: '这台还没接入共享库' }
+  }
+
+  try {
+    const response = await fetch(`${cfg.apiUrl}/api/v1/bind/query`, {
+      method: 'POST',
+      headers: shareHeaders(cfg.token),
+      body: JSON.stringify({ qq }),
+      signal: AbortSignal.timeout(READ_TIMEOUT_MS)
+    })
+
+    if (response.status === 404) return { found: false }
+    if (response.status === 401) return { found: false, error: '令牌无效' }
+    if (response.status === 403) return { found: false, error: '令牌已被吊销' }
+    if (!response.ok) return { found: false, error: `共享库返回 ${response.status}` }
+
+    const data = await response.json()
+    return {
+      found: true,
+      campIds: Array.isArray(data?.campIds) ? data.campIds.map(String) : [],
+      current: String(data?.current || ''),
+      updatedAt: Number(data?.updatedAt) || 0
+    }
+  } catch (error) {
+    warnOnce('lookup', `[营地共享] 查询失败：${error?.message || error}`)
+    return { found: false, error: '连不上共享库' }
+  }
+}
+
 /* --------------------------------------------------------------- 状态 */
 
 /** 给 `#营地ID共享状态` 和 `#营地共享库` 用的运行时状态 */

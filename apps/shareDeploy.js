@@ -25,7 +25,10 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
-import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind, getShareStatus } from '#utils'
+import {
+  shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind,
+  getShareStatus, querySharedBind
+} from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
 
@@ -226,7 +229,9 @@ export class ShareDeploy extends plugin {
         { reg: '^#营地共享库?吊销\\s*(\\d+)$', fnc: 'revoke', permission: 'master' },
         // 全量对账。自动对账是「用户发指令时后台顺手做」、还带一小时节流，
         // 这条是人工兜底：刚接入完、或者怀疑某些人没传上去时手动推一遍
-        { reg: '^#营地共享库?同步$', fnc: 'syncAll', permission: 'master' }
+        { reg: '^#营地共享库?同步$', fnc: 'syncAll', permission: 'master' },
+        // 直接问库。排查「两台都同步了、对面还说我没绑定」的第一站
+        { reg: '^#营地共享库?查\\s*(\\d{5,12})$', fnc: 'lookup', permission: 'master' }
       ]
     })
   }
@@ -687,5 +692,41 @@ export class ShareDeploy extends plugin {
 
     // 结果里有别人的 QQ，群里执行时走私聊
     return this.replySafely(e, lines.join('\n'))
+  }
+
+  /**
+   * 直接问库：这个 QQ 在库里有没有记录、有哪些营地ID。
+   *
+   * 排查「两台都同步了、对面还是说我没绑定」的第一站 —— 先确认库里到底有没有，
+   * 比来回猜「是不是缓存」「要不要重启」快得多。
+   */
+  async lookup (e) {
+    if (!isShareReady()) {
+      return e.reply('这台还没接入营地ID共享库，发 #营地共享库 看看', shouldQuote())
+    }
+
+    const qq = String(e.msg.match(/(\d{5,12})\s*$/)?.[1] || '')
+    const result = await querySharedBind(qq)
+
+    if (result.error) return e.reply(`查不了：${result.error}`, shouldQuote())
+
+    if (!result.found) {
+      return e.reply([
+        `库里没有 ${qq} 的共享记录。`,
+        '',
+        '也就是说这个 QQ 从没发过 #开启营地ID共享 或 #同步营地ID共享。',
+        '得让 TA 本人在任意一台接入了同一个库的机器人上发一次 —— 别人替不了。'
+      ].join('\n'), shouldQuote())
+    }
+
+    return e.reply([
+      `库里 ${qq} 的记录：`,
+      `营地ID：${result.campIds.length ? result.campIds.join('、') : '（空）'}`,
+      `当前号：${result.current || '—'}`,
+      '',
+      '库里有 TA，别的机器人查询时就该拿得到。那边要是还说没绑定，多半是：',
+      '· 那台上 TA 自己绑过号 → 本地优先，用的是本机那个',
+      '· 那台没有可用的全局账号 → 会提示「共享库暂时用不了」而不是「没绑定」'
+    ].join('\n'), shouldQuote())
   }
 }
