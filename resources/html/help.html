@@ -233,17 +233,24 @@
         border-left: 2rem solid color-mix(in srgb, var(--accent) 45%, transparent);
     }
 
+    /*
+     * 每张卡固定「指令名 / 别名 / 说明」各一行，三行封顶。
+     * 内容多的（如 #谁在打游戏 有 8 个别名）靠截断收口，不许把卡片撑高 ——
+     * grid 同行等高，一张高卡会把整行都顶起来，参差不齐就是这么来的。
+     */
     .card-cmd {
         display: flex;
         align-items: baseline;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 6rem;
+        overflow: hidden;
     }
 
     .cmd {
         font-size: 16rem;
         letter-spacing: 0.5rem;
         color: var(--accent);
+        white-space: nowrap;
     }
 
     .args {
@@ -254,12 +261,15 @@
         color: color-mix(in srgb, var(--accent) 72%, #ffffff);
         background: color-mix(in srgb, var(--accent) 13%, transparent);
         border: 1rem solid color-mix(in srgb, var(--accent) 28%, transparent);
+        /* 参数块内部也不许折行，否则 [序号/营地ID] 会断成两行把卡顶高 */
+        white-space: nowrap;
     }
 
     .alias {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 5rem;
+        overflow: hidden;
     }
 
     .alias-chip {
@@ -269,6 +279,9 @@
         color: var(--c-text-muted);
         background: rgba(255, 255, 255, 0.06);
         border: 1rem solid var(--c-border-soft);
+        /* nowrap 的 flex 里不加这两条，chip 会被压扁变形 */
+        flex-shrink: 0;
+        white-space: nowrap;
     }
 
     .card-desc {
@@ -276,6 +289,11 @@
         font-size: 13rem;
         line-height: 1.5;
         color: var(--c-text-muted);
+        /* 说明也压到一行，超出的加省略号 */
+        display: -webkit-box;
+        -webkit-line-clamp: 1;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
 
     .footer {
@@ -330,7 +348,7 @@
                         </div>
                         {{if item.alias}}
                         <div class="alias">
-                            {{each item.alias a}}<span class="alias-chip">{{a}}</span>{{/each}}
+                            {{each item.alias.slice(0, 2) a}}<span class="alias-chip">{{a}}</span>{{/each}}
                         </div>
                         {{/if}}
                         <div class="card-desc">{{item.desc}}</div>
