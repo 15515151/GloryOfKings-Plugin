@@ -24,9 +24,45 @@ const PC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 // 扫码页在手机 UA 下才给二维码版式
 const QR_UA = 'Mozilla/5.0 (Linux; Android 15; V2366GA Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/110.0.5481.154 Safari/537.36 tencent_game_emulator'
 
-const PAGE_TIMEOUT_MS = 45 * 1000
-const QR_WAIT_TIMEOUT_MS = 40 * 1000
+// 外置渲染（puppeteerWS 连远程 chromium）时页面往返更慢，超时都放宽一些
+const PAGE_TIMEOUT_MS = 90 * 1000
+const QR_WAIT_TIMEOUT_MS = 60 * 1000
 const SCAN_TIMEOUT_MS = 3 * 60 * 1000
+
+/**
+ * 取渲染器实例。
+ * 优先用宿主给的 `e.runtime.puppeteer` —— 这样在「外置渲染」（渲染器配了 puppeteerWS，
+ * 连的是远程 chromium）或换了别的渲染后端的机器人上同样能用；
+ * 直接 import 渲染器文件是兜底，只适合没传 e 的脱机场景。
+ */
+function resolveRenderer(e) {
+  const fromRuntime = e?.runtime?.puppeteer
+  if (fromRuntime?.browserInit) {
+    return fromRuntime
+  }
+  return puppeteer
+}
+
+/**
+ * 拿浏览器实例。
+ * browserInit() 在并发时（别的指令正在出图）会直接返回 false，所以这里要重试几次，
+ * 不然用户会莫名其妙看到「生成二维码失败」。
+ */
+async function acquireBrowser(renderer, { retries = 4, intervalMs = 700 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const browser = await renderer.browserInit().catch(error => {
+      logger.error(`[营地QQ登录] 浏览器初始化失败: ${error.message}`)
+      return null
+    })
+    if (browser) {
+      return browser
+    }
+    if (attempt < retries) {
+      await sleep(intervalMs)
+    }
+  }
+  return null
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -148,10 +184,12 @@ async function loginCampByOpenSdk(tokens) {
 
 /**
  * 用宿主复用的浏览器开一个 QQ 登录会话，等到二维码出现。
+ * @param {object} [e] 消息事件对象，用来取宿主的渲染器（外置渲染机器上必须传）
  * @returns {Promise<{browser, page, qrcodeBuffer, waitForCode, close}>}
  */
-export async function createQQLoginSession() {
-  const browser = await puppeteer.browserInit()
+export async function createQQLoginSession(e) {
+  const renderer = resolveRenderer(e)
+  const browser = await acquireBrowser(renderer)
   if (!browser) {
     throw new Error('浏览器不可用，无法发起 QQ 扫码登录')
   }
@@ -194,7 +232,14 @@ export async function createQQLoginSession() {
       }
     })
 
-    await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS })
+    logger.info(`[营地QQ登录] 使用渲染器发起登录（${renderer === puppeteer ? '本地' : '宿主 runtime'}）`)
+    try {
+      await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS })
+    } catch (error) {
+      // 外置渲染的机器若访问不了 QQ 登录页，会卡在这里 —— 日志里说清楚，别让它看起来像随机失败
+      logger.error(`[营地QQ登录] 打开登录页失败: ${error.message}`)
+      throw new Error('打开 QQ 登录页失败，请稍后重试')
+    }
 
     // 等页面把二维码渲染出来（在 iframe / 各版式下找一找）
     const deadline = Date.now() + QR_WAIT_TIMEOUT_MS
@@ -226,6 +271,7 @@ export async function createQQLoginSession() {
       throw new Error('未能获取登录二维码，请稍后重试')
     }
 
+    // 区域截图失败就退化成整页截图 —— 部分渲染后端对 clip 支持不好
     const qrcodeBuffer = await page.screenshot({
       clip: {
         x: Math.max(0, box.x - 12),
@@ -233,7 +279,14 @@ export async function createQQLoginSession() {
         width: box.width + 24,
         height: box.height + 24
       }
+    }).catch(async error => {
+      logger.warn(`[营地QQ登录] 二维码区域截图失败，改用整页截图: ${error.message}`)
+      return page.screenshot().catch(() => null)
     })
+
+    if (!qrcodeBuffer) {
+      throw new Error('二维码截图失败，请稍后重试')
+    }
 
     const waitForCode = async ({ timeoutMs = SCAN_TIMEOUT_MS, onStatusChange } = {}) => {
       const began = Date.now()

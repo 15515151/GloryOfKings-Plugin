@@ -619,7 +619,7 @@ export class AccountManager extends plugin {
 
     let session
     try {
-      session = await createQQLoginSession()
+      session = await createQQLoginSession(e)
     } catch (error) {
       logger.error(`[营地QQ登录] 生成二维码失败: ${error.message}`)
       await e.reply('生成营地登录二维码失败，请稍后重试')
