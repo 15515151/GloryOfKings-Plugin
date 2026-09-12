@@ -78,7 +78,7 @@ function decodeEncodeRes(encodeRes, publicKey = DEFAULT_PUBLIC_KEY) {
   }
 }
 
-function buildSpecialEncodeParam(publicKey = DEFAULT_PUBLIC_KEY) {
+export function buildSpecialEncodeParam(publicKey = DEFAULT_PUBLIC_KEY) {
   const timestamp = Date.now()
   const nonce = `:${crypto.randomUUID().replace(/-/g, '')}:${timestamp}`
   const deviceId = crypto.randomUUID().replace(/-/g, '')

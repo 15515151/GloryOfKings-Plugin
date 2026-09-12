@@ -7,6 +7,10 @@ import {
   createWechatLoginSession,
   waitForWechatLogin
 } from '../utils/wechatLogin.js'
+import {
+  createQQLoginSession,
+  waitForQQLogin
+} from '../utils/qqLogin.js'
 import { renderMasterPanel } from '../utils/masterPanel.js'
 
 const pendingWechatLoginMap = new Map()
@@ -48,6 +52,15 @@ export class AccountManager extends plugin {
         {
           reg: '^#营地wx全局登录$',
           fnc: 'wechatGlobalScanLogin',
+          permission: 'master'
+        },
+        {
+          reg: '^#营地QQ登录$',
+          fnc: 'qqScanLogin'
+        },
+        {
+          reg: '^#营地QQ全局登录$',
+          fnc: 'qqGlobalScanLogin',
           permission: 'master'
         },
         {
@@ -591,6 +604,132 @@ export class AccountManager extends plugin {
         '\n登录成功后会直接更新默认全局账号的 token 和鉴权信息。'
       ]
     })
+  }
+
+  async startQQLogin(e, botUserId, options = {}) {
+    if (this.getPendingWechatLogin(botUserId)) {
+      await e.reply('当前已有一个营地登录任务在进行中，请先完成当前二维码或稍后再试')
+      return true
+    }
+
+    const {
+      mode = 'personal',
+      qrPromptLines = []
+    } = options
+
+    let session
+    try {
+      session = await createQQLoginSession()
+    } catch (error) {
+      logger.error(`[营地QQ登录] 生成二维码失败: ${error.message}`)
+      await e.reply('生成营地登录二维码失败，请稍后重试')
+      return true
+    }
+
+    const taskId = `${botUserId}:qq:${mode}:${Date.now()}`
+    let qrReply = null
+    try {
+      qrReply = await e.reply([
+        ...qrPromptLines,
+        '\n',
+        segment.image(`base64://${session.qrcodeBuffer.toString('base64')}`)
+      ])
+    } catch (error) {
+      await session.close()
+      logger.error(`[营地QQ登录] 发送二维码失败: ${error.message}`)
+      return true
+    }
+
+    const pendingInfo = {
+      taskId,
+      mode,
+      qrMessageId: qrReply?.message_id || '',
+      scanStatusMessageId: '',
+      hasScanned: false,
+      scanStatusRecallTimer: null,
+      recallTimer: setTimeout(() => {
+        void this.recallReplyMessage(e, pendingInfo.qrMessageId)
+          .finally(() => {
+            pendingInfo.qrMessageId = ''
+          })
+      }, LOGIN_QR_RECALL_SECONDS * 1000)
+    }
+    pendingWechatLoginMap.set(botUserId, pendingInfo)
+
+    void this.waitForQQLoginResult(e, botUserId, taskId, session, mode)
+    return true
+  }
+
+  async qqScanLogin(e) {
+    const botUserId = await this.getReplyUserId(e)
+    if (!botUserId) return
+    return this.startQQLogin(e, botUserId, {
+      mode: 'personal',
+      qrPromptLines: [
+        `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
+        '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
+        '\n如果你之后希望把这个账号加入公用池，可由主人使用【#共享营地账号 营地ID】开启共享。'
+      ]
+    })
+  }
+
+  async qqGlobalScanLogin(e) {
+    const botUserId = e.user_id
+    return this.startQQLogin(e, botUserId, {
+      mode: 'global',
+      qrPromptLines: [
+        `请用手机 QQ 扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
+        '\n登录成功后会直接更新默认全局账号的 token 和鉴权信息。'
+      ]
+    })
+  }
+
+  async waitForQQLoginResult(e, botUserId, taskId, session, mode = 'personal') {
+    const pending = this.getPendingWechatLogin(botUserId)
+    try {
+      const result = await waitForQQLogin(session, {
+        onStatusChange: (status) => {
+          void this.handleWechatLoginStatusChange(e, botUserId, taskId, status)
+        }
+      })
+      if (this.getPendingWechatLogin(botUserId)?.taskId !== taskId) {
+        return
+      }
+
+      await this.recallWechatLoginMessages(e, pending)
+
+      if (mode === 'global') {
+        await this.finishGlobalWechatLogin(e, result)
+      } else {
+        await this.finishPersonalWechatLogin(e, botUserId, result)
+      }
+    } catch (error) {
+      if (this.getPendingWechatLogin(botUserId)?.taskId !== taskId) {
+        return
+      }
+
+      await this.recallWechatLoginMessages(e, pending)
+      logger.error(`[营地QQ登录] 登录流程失败: ${error.message}`)
+
+      if (error.code === 'QR_EXPIRED') {
+        await e.reply('营地登录二维码已过期，请重新发起')
+      } else if (error.code === 'QR_CANCELED') {
+        await e.reply('营地登录已取消，请重新发起')
+      } else if (error.code === 'QR_TIMEOUT') {
+        if (pending?.hasScanned) {
+          await e.reply('已扫码，但长时间未确认，营地登录已超时，请重新发起')
+        } else {
+          await e.reply('营地登录等待超时，请重新发起')
+        }
+      } else {
+        await e.reply('营地登录失败，请稍后重试；若反复失败请反馈给主人')
+      }
+    } finally {
+      await session.close()
+      if (this.getPendingWechatLogin(botUserId)?.taskId === taskId) {
+        this.clearPendingWechatLogin(botUserId)
+      }
+    }
   }
 
   async finishPersonalWechatLogin(e, botUserId, result) {
