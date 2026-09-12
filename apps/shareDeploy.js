@@ -25,7 +25,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
-import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind } from '#utils'
+import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind, getShareStatus } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
 
@@ -355,12 +355,38 @@ export class ShareDeploy extends plugin {
   /* -------------------------------------------------------- 状态 */
 
   async status (e) {
+    const env = readEnvFile()
     const proc = pm2Proc(PROC_NAME)
     const ours = isOurProcess(proc, SERVER_DIR)
-    const env = readEnvFile()
-    const port = Number(env.GOK_PORT) || DEFAULT_PORT
+
+    // 本机没搭过库 = 这台是**接入方**。接入方本来就不该有服务端进程，
+    // 报「进程没在跑，去部署一个」是彻头彻尾的误导 —— 主人就被这条唬过。
+    // 这种情况改成把「你接入的那个库」的状态显示出来
+    if (!ours && !env.GOK_ADMIN_SECRET) {
+      const cfg = readShareConfig()
+      if (!isShareReady()) {
+        return e.reply([
+          '这台机器人没在本机搭库，也还没接入别人的库。',
+          '',
+          '自己搭一个：#营地共享库部署',
+          '接入别人的：#营地共享库 看当前状态和接入办法'
+        ].join('\n'), shouldQuote())
+      }
+
+      const runtime = getShareStatus()
+      return e.reply([
+        '🗂 营地ID共享库（这台是接入方）',
+        `地址：${cfg.apiUrl}`,
+        `令牌：${maskToken(cfg.token)}`,
+        `本机缓存：${runtime.cachedCount} 条`,
+        `连通性：${runtime.circuitOpen ? '暂时不可用（自动重试中）' : '正常'}`,
+        '',
+        '服务端进程不在本机，所以这里看不到「跑没跑」—— 那要看搭库那台。'
+      ].join('\n'), shouldQuote())
+    }
 
     const lines = ['🗂 营地ID共享库服务端']
+    const port = Number(env.GOK_PORT) || DEFAULT_PORT
 
     if (!proc) {
       lines.push('进程：没在跑')
