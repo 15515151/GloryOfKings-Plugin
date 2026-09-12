@@ -271,18 +271,52 @@ export async function createQQLoginSession(e) {
       throw new Error('未能获取登录二维码，请稍后重试')
     }
 
-    // 区域截图失败就退化成整页截图 —— 部分渲染后端对 clip 支持不好
-    const qrcodeBuffer = await page.screenshot({
-      clip: {
-        x: Math.max(0, box.x - 12),
-        y: Math.max(0, box.y - 12),
-        width: box.width + 24,
-        height: box.height + 24
+    // 优先在页面内把二维码读成 base64 —— 不走截图。
+    // 截图依赖渲染后端（外置渲染/远程 chromium 上 clip、deviceScaleFactor 都可能不靠谱），
+    // 而页面内的图片本来就是同源请求，直接 fetch 回来最稳，体积也更小。
+    let qrcodeBuffer = await page.evaluate(async () => {
+      const el = document.querySelector('#qrlogin_img, .qrlogin_img, img[src*="ptqrshow"], img[src*="qrcode"], canvas#qrlogin_canvas, .qrlogin canvas')
+      if (!el) {
+        return null
       }
-    }).catch(async error => {
-      logger.warn(`[营地QQ登录] 二维码区域截图失败，改用整页截图: ${error.message}`)
-      return page.screenshot().catch(() => null)
-    })
+      try {
+        if (el.tagName === 'CANVAS') {
+          return el.toDataURL('image/png')
+        }
+        const src = el.currentSrc || el.src || el.getAttribute('data-src')
+        if (!src) {
+          return null
+        }
+        const response = await fetch(src, { credentials: 'include' })
+        const blob = await response.blob()
+        return await new Promise(resolve => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result)
+          reader.onerror = () => resolve(null)
+          reader.readAsDataURL(blob)
+        })
+      } catch (error) {
+        return null
+      }
+    }).catch(() => null)
+
+    if (typeof qrcodeBuffer === 'string' && qrcodeBuffer.startsWith('data:')) {
+      qrcodeBuffer = Buffer.from(qrcodeBuffer.slice(qrcodeBuffer.indexOf(',') + 1), 'base64')
+    } else {
+      // 兜底：页面里读不到（版式特殊）才截图；区域截图失败再退整页
+      logger.warn('[营地QQ登录] 页面内未读到二维码图片，改用截图')
+      qrcodeBuffer = await page.screenshot({
+        clip: {
+          x: Math.max(0, box.x - 12),
+          y: Math.max(0, box.y - 12),
+          width: box.width + 24,
+          height: box.height + 24
+        }
+      }).catch(async error => {
+        logger.warn(`[营地QQ登录] 二维码区域截图失败，改用整页截图: ${error.message}`)
+        return page.screenshot().catch(() => null)
+      })
+    }
 
     if (!qrcodeBuffer) {
       throw new Error('二维码截图失败，请稍后重试')
