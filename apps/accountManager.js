@@ -48,21 +48,23 @@ export class AccountManager extends plugin {
           fnc: 'deleteWzryId'
         },
         {
-          reg: '^#营地wx登录$',
+          reg: new RegExp('^#营地wx登录$', 'i'),
           fnc: 'wechatScanLogin'
         },
         {
-          reg: '^#营地wx全局登录$',
+          reg: new RegExp('^#营地wx全局登录$', 'i'),
           fnc: 'wechatGlobalScanLogin',
           permission: 'master'
         },
+        // 四条登录/全局登录一律带 `i`：手机上打「qq」「wx」比大写顺手，
+        // 用户不该为了大小写重发一遍。字符串形式的 reg 没法写内联标志，
+        // 但 Yunzai 收 RegExp 对象（同文件那几条 ID 指令就是这么写的）
         {
-          // 大小写都认：手机上打「qq」比「QQ」顺手，用户不该为这个重发一遍
-          reg: '^#营地[Qq][Qq]登录$',
+          reg: new RegExp('^#营地QQ登录$', 'i'),
           fnc: 'qqScanLogin'
         },
         {
-          reg: '^#营地[Qq][Qq]全局登录$',
+          reg: new RegExp('^#营地QQ全局登录$', 'i'),
           fnc: 'qqGlobalScanLogin',
           permission: 'master'
         },
