@@ -28,7 +28,7 @@ import fetch from 'node-fetch'
 import { PluginData, Config } from '#components'
 import { readYamlFile, writeYamlFile } from './yamlUtils.js'
 import { quarantineCorrupt } from './safeStore.js'
-import { getCurrentId, getBoundIds } from './localBind.js'
+import { getCurrentId, getBoundIds, readUserData } from './localBind.js'
 import authStore from './authStore.js'
 
 const CACHE_FILE = path.join(PluginData, 'share', 'idcache.yaml')
@@ -353,7 +353,57 @@ async function requestShare (cfg, qq, since) {
   const picked = String(data?.current || '')
   const campId = ids.includes(picked) ? picked : (ids[0] || '')
 
-  return { campId, updatedAt: Number(data?.updatedAt) || Date.now() }
+  return { campId, campIds: ids, updatedAt: Number(data?.updatedAt) || Date.now() }
+}
+
+const USER_DATA_FILE = path.join(PluginData, 'UserData.yaml')
+
+/**
+ * 把共享库拿到的绑定**落到本机** `UserData.yaml`，并打上 `fromShare` 标记。
+ *
+ * 这就是「上传到库里、库里再下发到同步端」里**下发**的那一步，也是唯一治本的做法：
+ * 插件里有二十多处**直接读 `UserData.yaml`** 的地方（`#查询战绩`、`#皮肤墙`、
+ * `#我的英雄`、排行榜、`#谁在打游戏`…），它们不走 `getCurrentId`，所以共享怎么改
+ * 它们都认不到。逐个去改那些读取点永远会漏 —— 真踩过：当初只改了调 `getCurrentId`
+ * 的 12 处，结果最常用的 `#查询战绩` 恰好是直接读文件的那个。
+ *
+ * 落地之后就一劳永逸：全插件所有读绑定的地方自动都认。
+ *
+ * 本机**已经有绑定**的不动（本地优先，用户在哪儿绑的以哪儿为准）。
+ */
+function adoptSharedBind (qq, campIds, currentCampId) {
+  try {
+    const data = readUserData()
+    const existing = data[qq]
+    if (existing && Array.isArray(existing.ids) && existing.ids.length) return
+
+    data[qq] = {
+      ids: [...campIds],
+      current: Math.max(0, campIds.indexOf(currentCampId)),
+      // 标记来源：好让「关闭共享」时能把这份清掉，也不跟用户自己绑的混为一谈
+      fromShare: true,
+      sharedAt: Date.now()
+    }
+    writeYamlFile(USER_DATA_FILE, data)
+
+    logger?.debug?.(`[营地共享] ${qq} 的绑定已从共享库落到本机（${campIds.length} 个）`)
+  } catch (error) {
+    warnOnce('adopt', `[营地共享] 落地到本机失败：${error?.message || error}`)
+  }
+}
+
+/** 把「从共享库落下来的」那份清掉。用户关共享、或者库里没他时调 */
+export function dropAdoptedBind (qq) {
+  try {
+    const data = readUserData()
+    if (!data[qq]?.fromShare) return
+
+    delete data[qq]
+    writeYamlFile(USER_DATA_FILE, data)
+    logger?.debug?.(`[营地共享] ${qq} 从共享库落到本机的那份已清除`)
+  } catch (error) {
+    warnOnce('adopt-drop', `[营地共享] 清理落地数据失败：${error?.message || error}`)
+  }
 }
 
 /* --------------------------------------------------------------- 对账 */
@@ -375,10 +425,26 @@ async function requestShare (cfg, qq, since) {
  *  - 每个 QQ 每小时最多一次
  *  - 本机没有绑定就什么都不做（没东西可传）
  */
+/** 从共享库落下来的那份，多久回去跟库对一次 */
+const ADOPTED_RECONCILE_MS = 5 * 60 * 1000
+
+/** 本机这份绑定是不是「从共享库落下来的」 */
+function isAdoptedBind (qq) {
+  try {
+    return readUserData()[qq]?.fromShare === true
+  } catch {
+    return false
+  }
+}
+
 async function reconcileSharedUser (qq, { force = false } = {}) {
   try {
     const now = Date.now()
-    if (!force && now - (lastReconcileAt.get(qq) || 0) < RECONCILE_INTERVAL_MS) return
+
+    // 落下来的那份要跟紧一点：本地优先会让它一直生效，而用户随时可能在
+    // 别的机器人上撤销共享。自己绑的不用管，一小时后对一次就够
+    const interval = isAdoptedBind(qq) ? ADOPTED_RECONCILE_MS : RECONCILE_INTERVAL_MS
+    if (!force && now - (lastReconcileAt.get(qq) || 0) < interval) return
     lastReconcileAt.set(qq, now)
 
     const cfg = readShareConfig()
@@ -388,11 +454,23 @@ async function reconcileSharedUser (qq, { force = false } = {}) {
     const ids = getBoundIds(qq)
     if (!ids.length) return
 
+    // 本机这份要是**从共享库落下来的**，就只确认库里还有他、别把它传回去 ——
+    // 那不是他在这台机器上绑的号，传上去等于把自己刚拿到的东西又还回去，来回覆盖
+    if (isAdoptedBind(qq)) {
+      const current = await requestShare(cfg, qq, 0)
+      if (!current?.campId) {
+        knownShared.delete(qq)
+        dropAdoptedBind(qq)
+      }
+      return
+    }
+
     const result = await requestShare(cfg, qq, 0)
     if (!result?.campId) {
       // 库里没有他了 —— 说明他撤销了共享（服务端会留墓碑，这里也是 404）。
-      // 必须把标记摘掉，否则本机新绑的号会被一直传上去
+      // 标记要摘、本机那份落下来的也要清，否则本机新绑的号会被一直传上去
       knownShared.delete(qq)
+      dropAdoptedBind(qq)
       return
     }
 
@@ -429,10 +507,27 @@ export async function reconcileNow (userId) {
   const ids = getBoundIds(qq)
   if (!ids.length) return 'not-shared'
 
+  // 同上：本机这份是从库里落下来的，就别往库里传了
+  if (isAdoptedBind(qq)) {
+    try {
+      const current = await requestShare(cfg, qq, 0)
+      if (!current?.campId) {
+        knownShared.delete(qq)
+        dropAdoptedBind(qq)
+        return 'not-shared'
+      }
+      return 'shared'
+    } catch (error) {
+      warnOnce('reconcile-now', `[营地共享] 手动对账失败：${error?.message || error}`)
+      return 'failed'
+    }
+  }
+
   try {
     const result = await requestShare(cfg, qq, 0)
     if (!result?.campId) {
       knownShared.delete(qq)
+      dropAdoptedBind(qq)
       return 'not-shared'
     }
 
@@ -533,8 +628,9 @@ async function resolveCurrentIdInner (userId, { share = true } = {}) {
 
       if (!result) {
         // 库里没有他（或者他已经撤销了）—— 把「开过共享」的标记摘掉，
-        // 否则本机新绑的号还会被一直传上去
+        // 否则本机新绑的号还会被一直传上去；顺带清掉之前落下来的那份
         knownShared.delete(qq)
+        dropAdoptedBind(qq)
         writeMemory(qq, { campId: '', ttlMs: CACHE_TTL_MS })
         return { campId: null, source: 'none' }
       }
@@ -553,6 +649,10 @@ async function resolveCurrentIdInner (userId, { share = true } = {}) {
         ttlMs: CACHE_TTL_MS,
         updatedAt: result.updatedAt
       })
+
+      // 「库里下发到同步端」那一步。落到本机之后，所有直接读 UserData.yaml 的指令
+      // （#查询战绩、#皮肤墙、排行榜…）也自动认了 —— 详见 adoptSharedBind 的说明
+      if (result.campIds?.length) adoptSharedBind(qq, result.campIds, result.campId)
 
       return result.campId
         ? { campId: result.campId, source: 'shared' }

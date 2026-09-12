@@ -15,7 +15,7 @@ import path from 'node:path'
 import { PluginData } from '#components'
 import { readYamlFile, writeYamlFile } from './yamlUtils.js'
 import { getBoundIds, getCurrentId } from './localBind.js'
-import { pushBind, revokeBind, isShareReady, isKnownShared } from './shareStore.js'
+import { pushBind, revokeBind, isShareReady, isKnownShared, dropAdoptedBind } from './shareStore.js'
 
 const USERS_FILE = path.join(PluginData, 'share', 'users.yaml')
 const USERS_SCHEMA = 1
@@ -120,6 +120,10 @@ export async function disableSharing (userId) {
 
   const result = await revokeBind(qq)
   if (!result.ok) return result
+
+  // 顺带把之前从库里落到本机的那份清掉 —— 用户都说不要共享了，
+  // 本机还留着一份「来自共享库」的绑定说不过去
+  dropAdoptedBind(qq)
 
   setUserShareState(qq, { enabled: false })
   return { ok: true }
