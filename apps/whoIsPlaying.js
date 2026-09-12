@@ -149,7 +149,7 @@ export class WhoIsPlaying extends plugin {
     for (const list of [playing, justEnded, inGameIdle, online, offline, unknown]) dedupeByName(list)
 
     const groups = { playing, justEnded, inGameIdle, online, offline, unknown }
-    const img = await this.shot(e, groups, here, now)
+    const img = await this.shot(e, groups, here)
 
     await e.reply([
       img || renderText({ ...groups, now }),
@@ -158,11 +158,7 @@ export class WhoIsPlaying extends plugin {
   }
 
   /** 出图。失败返回 null，由调用方回落到文字名单 */
-  async shot (e, { playing, justEnded, inGameIdle, online, offline, unknown }, here, now) {
-    const total = playing.length + justEnded.length + inGameIdle.length + online.length + offline.length + unknown.length
-    // 最新一份快照的时刻 —— 整张图的新鲜度就看它
-    const newest = Math.max(0, ...[...playing, ...justEnded, ...inGameIdle, ...online, ...offline].map(row => row.seenAt))
-
+  async shot (e, { playing, justEnded, inGameIdle, online, offline, unknown }, here) {
     try {
       return await puppeteer.screenshot('WhoIsPlaying', {
         imgType: 'webp',
@@ -173,8 +169,6 @@ export class WhoIsPlaying extends plugin {
         subText: here ? '本群在线名单' : '仅你自己',
         scopeName: here ? (e.group_name || e.group?.name || `群 ${here}`) : '我的在线状态',
         avatar: here ? await getGroupAvatar(here, e.group, 100) : await this.avatarOf(e, e.user_id),
-        total,
-        updateText: newest ? `${agoText(newest, now)}更新` : '',
         playing,
         justEnded,
         inGameIdle,
@@ -281,7 +275,6 @@ function buildRow (qq, sub, heroMap, now) {
     hasState,
     idleInGame,
     seenAt,
-    agoText: seenAt ? agoText(seenAt, now) : '',
     stale: seenAt > 0 && now - seenAt > STALE_MS,
     // 新增展示字段：对局/在线时长、段位、刚打完
     gamingFor,

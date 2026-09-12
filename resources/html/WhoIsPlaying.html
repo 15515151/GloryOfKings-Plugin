@@ -41,11 +41,9 @@
       text-overflow: ellipsis;
     }
     .who-meta { font-size: 12px; color: rgba(255,255,255,0.38); }
-    .who-meta .stale { color: #d9a34a; }
-    /* 时长 / 段位标签：跟观测时间同一行，靠间隔和颜色区分 */
+    /* 时长 / 段位标签：靠间隔和颜色区分 */
     .who-meta .dur { color: rgba(245,215,110,0.75); }
     .who-meta .rank { color: rgba(255,255,255,0.55); }
-    .who-meta .rank + .stale { margin-left: 8px; }
     .who-meta .ended-tag { color: #6fd39b; }
     .who-state {
       font-size: 13px;
@@ -126,8 +124,6 @@
     <img class="avatar" src="{{avatar}}" alt="" onerror="this.style.display='none'">
     <div class="user-info">
       <h2 class="username">{{scopeName}}</h2>
-      <span class="badge">{{total}} 人在名单</span>
-      {{if updateText}}<span class="badge">{{updateText}}</span>{{/if}}
     </div>
     <div class="report-label">
       {{title}}
@@ -139,7 +135,6 @@
   <div class="section">
     <div class="section-title">
       正在对局
-      <span class="tip">英雄就是当前这一把</span>
     </div>
     <div class="who-list">
       {{each playing row}}
@@ -150,7 +145,6 @@
           <div class="who-meta">
             {{if row.gamingFor}}<span class="dur">已打 {{row.gamingFor}}</span>{{/if}}
             {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
-            {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
           </div>
         </div>
         {{if row.heroName}}
@@ -212,7 +206,6 @@
           <div class="who-name">{{row.name}}</div>
           <div class="who-meta">
             {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
-            {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
           </div>
         </div>
         <span class="who-state lobby">大厅中</span>
@@ -237,7 +230,6 @@
           <div class="who-meta">
             {{if row.onlineFor}}<span class="dur">在线 {{row.onlineFor}}</span>{{/if}}
             {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
-            {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
           </div>
         </div>
         <span class="who-state on">{{row.stateText}}</span>
@@ -257,7 +249,6 @@
   <div class="section">
     <div class="section-title">
       离线（{{offline.length}}）
-      <span class="tip">离线时检查间隔会自动拉长，时间戳普遍偏旧就不逐个标了</span>
     </div>
     <div class="name-flow">
       {{each offline row}}
@@ -273,7 +264,6 @@
   <div class="section">
     <div class="section-title">
       还没采集到状态（{{unknown.length}}）
-      <span class="tip">只开了战绩推送还没轮询到，或者开启后一次都没上线</span>
     </div>
     <div class="name-flow">
       {{each unknown row}}
