@@ -63,8 +63,13 @@ export default class Button {
       { text: '绑定营地', input: '#绑定营地' },
       { text: '切换营地', input: '#切换营地' }
     ])
+    // 登录态两种都留着：微信扫出来的和 QQ 扫出来的在营地里是两个体系，
+    // 用户手上是哪个就点哪个（只给微信那一个的话，QQ 区的用户会以为没这条路）
     rows.push([
-      { text: '营地登录', callback: '#营地wx登录' },
+      { text: '微信登录', callback: '#营地wx登录' },
+      { text: 'QQ登录', callback: '#营地QQ登录' }
+    ])
+    rows.push([
       { text: '删除营地', input: '#删除营地' }
     ])
     return segment.button(...rows)

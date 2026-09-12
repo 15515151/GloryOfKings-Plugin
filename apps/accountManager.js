@@ -152,7 +152,7 @@ export class AccountManager extends plugin {
       { cmd: '#营地ID / #王者ID / #我的ID / #我的王者ID', example: '示例: #我的王者ID' },
       { cmd: '#切换营地', example: '示例: #切换营地2' },
       { cmd: '#删除营地', example: '示例: #删除营地2' },
-      { cmd: '#营地wx登录', example: '示例: #营地wx登录' },
+      { cmd: '#营地wx登录 / #营地QQ登录', example: '示例: #营地wx登录' },
       { cmd: '#王者主页 / #全部王者主页', example: '示例: #王者主页2' },
       { cmd: '#查询战绩 / #查询N战绩', example: '示例: #查询2战绩' },
       { cmd: '#王者帮助', example: '示例: #王者帮助' }
@@ -784,7 +784,7 @@ export class AccountManager extends plugin {
       '默认全局账号已更新。',
       `\n营地ID：${savedAccount.userId || '未获取'}`,
       `\n昵称：${savedAccount.nickname || savedAccount.userName || '未命名'}`,
-      '\n登录态有效期通常约 30 天左右，失效后请重新使用【#营地wx全局登录】扫码更新。'
+      '\n登录态有效期通常约 30 天左右，失效后请重新使用【#营地wx全局登录】或【#营地QQ全局登录】扫码更新。'
     ])
   }
 
@@ -937,7 +937,7 @@ export class AccountManager extends plugin {
     if (skippedGlobalAccounts.length) {
       lines.push(
         removedAccounts.length ? '' : '本次未删除任何账号。',
-        `已跳过 ${skippedGlobalAccounts.length} 个失效的默认全局账号，失效标记会保留，后续可通过【#营地wx全局登录】或锅巴更新后恢复。`
+        `已跳过 ${skippedGlobalAccounts.length} 个失效的默认全局账号，失效标记会保留，后续可通过【#营地wx全局登录】/【#营地QQ全局登录】或锅巴更新后恢复。`
       )
     }
 

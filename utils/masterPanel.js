@@ -58,7 +58,7 @@ export function buildMasterPanelData() {
         value: globalPrimary
           ? `${maskId(globalPrimary.userId)} / ${globalPrimary.authInvalid ? '失效' : '正常'}`
           : '未配置',
-        desc: '配置指令：#营地wx全局登录 (刷新全局鉴权)',
+        desc: '配置指令：#营地wx全局登录 / #营地QQ全局登录 (刷新全局鉴权)',
         tone: globalPrimary
           ? (globalPrimary.authInvalid ? 'off' : 'on')
           : 'warn'
@@ -83,6 +83,7 @@ export function buildMasterPanelData() {
         title: '账号与更新',
         items: [
           { command: '#营地wx全局登录', desc: '刷新默认全局账号鉴权' },
+          { command: '#营地QQ全局登录', desc: 'QQ 扫码刷新默认全局账号鉴权' },
           { command: '#王者设置共享账号候选启用|关闭', desc: '切换共享账号候选' },
           { command: '#王者设置个人登录态兜底启用|关闭', desc: '切换个人登录态兜底' },
           { command: '#共享营地账号 [ID]', desc: '将账号放入共享池' },
