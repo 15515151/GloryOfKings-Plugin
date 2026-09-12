@@ -160,8 +160,13 @@ export function mergeSubState (qq, patch) {
  * battle / online 在 apps/gameRecordPush.js，daily / weekly / monthly 在 apps/battleReport.js，
  * 五者共用 GameRecordPush.yaml 的同一条记录（group / campId / roleName 都是现成的）。
  * 群报的订阅不在这里——那是按群存的，见 utils/groupReportStore.js。
+ *
+ * `onlineStatus` 比较特别：它**不做任何推送**，只让轮询顺手记一份在线状态快照，
+ * 供 `#谁在打游戏` 展示。也就是说它开着的订阅走「只采集不播报」，
+ * 与 `online`（上下线播报）是两件独立的事——别把二者合并，合并了就会有人
+ * 只想被看到、却被播报刷屏。
  */
-export const SUB_FLAGS = ['battle', 'online', 'daily', 'weekly', 'monthly']
+export const SUB_FLAGS = ['battle', 'online', 'daily', 'weekly', 'monthly', 'onlineStatus']
 
 /**
  * 某个开关是否开着。

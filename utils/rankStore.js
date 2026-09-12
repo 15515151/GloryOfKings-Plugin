@@ -137,11 +137,24 @@ export function getAllBindings() {
   for (const [botUserId, info] of Object.entries(userData)) {
     if (isBlackUser(botUserId)) continue
 
-    const ids = info?.ids || []
+    // 这里刻意**不用** `info?.ids || []` 兜底：UserData 里出现过 `{ ids: "" }` 这种
+    // 被写坏的记录，空串是 truthy 但不可迭代，会让 forEach 直接抛 TypeError，
+    // 整张榜单连带排行榜一起崩。Array.isArray 一票否决，坏记录直接跳过。
+    if (!Array.isArray(info?.ids)) {
+      if (info?.ids !== undefined) {
+        logger?.debug?.(`[王者] 绑定记录 ${botUserId} 的 ids 不是数组，已跳过`)
+      }
+      continue
+    }
+
+    const ids = info.ids
     const current = Number(info?.current ?? 0)
 
     ids.forEach((campId, index) => {
       const id = String(campId ?? '').trim()
+      // 空串是「这条绑定被清过但没删干净」，不是有效绑定，跳过它但**不影响同一个人
+      // 的其它绑定** —— 早先这里 return 的是 forEach 的回调，效果一样，
+      // 但配合上面的非数组判据才能保证「一个人有脏记录时整条记录不会静默消失」
       if (!id) return
       list.push({
         botUserId: String(botUserId),

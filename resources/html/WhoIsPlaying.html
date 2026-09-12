@@ -42,6 +42,11 @@
     }
     .who-meta { font-size: 12px; color: rgba(255,255,255,0.38); }
     .who-meta .stale { color: #d9a34a; }
+    /* 时长 / 段位标签：跟观测时间同一行，靠间隔和颜色区分 */
+    .who-meta .dur { color: rgba(245,215,110,0.75); }
+    .who-meta .rank { color: rgba(255,255,255,0.55); }
+    .who-meta .rank + .stale { margin-left: 8px; }
+    .who-meta .ended-tag { color: #6fd39b; }
     .who-state {
       font-size: 13px;
       padding: 3px 11px;
@@ -52,6 +57,13 @@
     }
     .who-state.on { background: rgba(111,211,155,0.16); color: #6fd39b; }
     .who-state.gaming { background: rgba(245,215,110,0.18); color: #f5d76e; }
+    .who-state.ended-s { background: rgba(111,211,155,0.14); color: rgba(111,211,155,0.85); }
+    /* 刚打完的行：绿色左边框，和「正在对局」的金色区分开 */
+    .who-row.ended {
+      border-color: rgba(111,211,155,0.3);
+      background: linear-gradient(100deg, rgba(111,211,155,0.08), rgba(255,255,255,0.03));
+    }
+    .who-row.ended .who-avatar { border-color: rgba(111,211,155,0.45); }
     /* 右侧英雄：头像 + 名字 */
     .who-hero { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .who-hero img {
@@ -107,31 +119,12 @@
     <img class="avatar" src="{{avatar}}" alt="" onerror="this.style.display='none'">
     <div class="user-info">
       <h2 class="username">{{scopeName}}</h2>
-      <span class="badge">{{total}} 人开了推送</span>
+      <span class="badge">{{total}} 人在名单</span>
       {{if updateText}}<span class="badge">{{updateText}}</span>{{/if}}
     </div>
     <div class="report-label">
       {{title}}
       <span class="sub">{{subText}}</span>
-    </div>
-  </div>
-
-  <div class="stat-grid">
-    <div class="stat-cell gold">
-      <div class="stat-val">{{playing.length}}</div>
-      <div class="stat-key">正在对局</div>
-    </div>
-    <div class="stat-cell good">
-      <div class="stat-val">{{online.length}}</div>
-      <div class="stat-key">在线</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-val">{{offline.length}}</div>
-      <div class="stat-key">离线</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-val">{{unknown.length}}</div>
-      <div class="stat-key">待采集</div>
     </div>
   </div>
 
@@ -148,6 +141,8 @@
         <div class="who-main">
           <div class="who-name">{{row.name}}</div>
           <div class="who-meta">
+            {{if row.gamingFor}}<span class="dur">已打 {{row.gamingFor}}</span>{{/if}}
+            {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
             {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
           </div>
         </div>
@@ -158,6 +153,37 @@
         </div>
         {{else}}
         <span class="who-state gaming">对局中</span>
+        {{/if}}
+      </div>
+      {{/each}}
+    </div>
+  </div>
+  {{/if}}
+
+  {{if justEnded.length}}
+  <div class="section">
+    <div class="section-title">
+      刚打完
+      <span class="tip">对局刚刚结束，营地那边可能还没刷新出战绩</span>
+    </div>
+    <div class="who-list">
+      {{each justEnded row}}
+      <div class="who-row ended">
+        <img class="who-avatar" src="{{row.avatar}}" alt="" onerror="this.style.visibility='hidden'">
+        <div class="who-main">
+          <div class="who-name">{{row.name}}</div>
+          <div class="who-meta">
+            <span class="ended-tag">{{row.endedAgoText}}结束</span>
+            {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
+          </div>
+        </div>
+        {{if row.heroName}}
+        <div class="who-hero">
+          <img src="{{row.heroIcon}}" alt="" onerror="this.style.display='none'">
+          <span>{{row.heroName}}</span>
+        </div>
+        {{else}}
+        <span class="who-state ended-s">刚结束</span>
         {{/if}}
       </div>
       {{/each}}
@@ -178,6 +204,8 @@
         <div class="who-main">
           <div class="who-name">{{row.name}}</div>
           <div class="who-meta">
+            {{if row.onlineFor}}<span class="dur">在线 {{row.onlineFor}}</span>{{/if}}
+            {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
             {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
           </div>
         </div>
