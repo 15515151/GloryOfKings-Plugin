@@ -33,7 +33,7 @@ import {
 import { loadPushList, savePushList, mergeSubState, disableSubFlag, subGroups, withSubGroup, withoutSubGroup, sleep, REQUEST_INTERVAL } from '../utils/pushStore.js'
 import { fetchRoleNames } from '../utils/roleName.js'
 import {
-  resolveCurrentId, getUserAvatar, Button, shouldQuote, readYamlFile, parsePerfArgs,
+  resolveCurrentId, getCurrentId, getUserAvatar, Button, shouldQuote, readYamlFile, parsePerfArgs,
   AT_HEAD, stripAtText, resolveTargetUserId, pickGroupSafe, isBlackUser
 } from '#utils'
 import { Config, PluginData } from '#components'

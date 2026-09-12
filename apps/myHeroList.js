@@ -14,7 +14,7 @@
 // 所以只从历史接口补 maxHeroFightPower 与称号两个字段。
 // 历史接口拿不到时（没绑角色 / 接口异常）退回显示当前战力，模板列名也跟着变，保证图还能出。
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { ApiService, readYamlFile, getLocalImage, Button, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { ApiService, readYamlFile, getLocalImage, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import path from 'path'
 import { PluginData, PluginPath } from '#components'
 
@@ -79,7 +79,7 @@ export class MyHeroList extends plugin {
     }
 
     if (!ID) {
-      const userInfo = (readYamlFile(path.join(PluginData, 'UserData.yaml')) || {})[userId]
+      const userInfo = (await resolveUserData(userId))[userId]
       ID = userInfo?.ids?.[userInfo.current || 0] || ''
     }
 

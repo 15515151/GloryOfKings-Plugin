@@ -1,6 +1,6 @@
 import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { ApiService, readYamlFile, Button, parsePerfArgs, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { ApiService, readYamlFile, Button, parsePerfArgs, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import { PluginData, PluginPath } from '#components'
 
 // 默认一屏放几个赛季总结。营地那边是全部赛季无限滚动，这里默认按 3 个赛季控制图片长度，
@@ -45,7 +45,7 @@ export class AllSeasonPerformance extends plugin {
   async render(e, mode) {
     const { userId, hint } = await resolveTargetUserId(e)
     if (hint) return e.reply(hint)
-    const userData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
+    const userData = await resolveUserData(userId)
     const input = stripAtText(e.msg).replace(new RegExp(`^#全部${mode === '排位' ? '(?:排位|赛季)' : mode}表现\\s*`), '').trim()
     const userInfo = userData[userId]
     const args = parsePerfArgs(input)

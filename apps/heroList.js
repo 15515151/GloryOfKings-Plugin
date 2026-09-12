@@ -3,7 +3,7 @@
 // 注意只有传具体 seasonId 时才带 heroFightPower/honorTitle，seasonId=0 的 historyList 里这两个字段是空的。
 // 生涯累计榜（/game/profile/herolist）作为赛季无数据时的兜底，字段参考自 https://github.com/KimigaiiWuyi/WzryUID
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { ApiService, readYamlFile, getLocalImage, Button, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { ApiService, readYamlFile, getLocalImage, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import path from 'path'
 import { PluginData, PluginPath } from '#components'
 
@@ -73,8 +73,7 @@ export class HeroList extends plugin {
     const { userId, hint } = await resolveTargetUserId(e)
     if (hint) return e.reply(hint)
 
-    const userFilePath = path.join(PluginData, 'UserData.yaml')
-    const allUserData = readYamlFile(userFilePath) || {}
+    const allUserData = await resolveUserData(userId)
     const userInfo = allUserData[userId]
 
     const ID = msg || (userInfo && userInfo.ids && userInfo.ids.length

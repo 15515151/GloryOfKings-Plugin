@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { PluginData, PluginPath } from '#components'
-import { ApiService, readYamlFile, getUserAvatar, isQQNumber, Button, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote, resolveMemberName } from '#utils'
+import { ApiService, readYamlFile, getUserAvatar, isQQNumber, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote, resolveMemberName } from '#utils'
 import { MIN_REQUEST_GAP_MS } from '../utils/api.js'
 // 详情图与评价图标解析被战绩推送共用，抽到了 utils/battleDetailImage.js
 import { fetchBattleDetail, renderBattleDetail, resolveMvp, resolveEvaluate } from '../utils/battleDetailImage.js'
@@ -111,7 +111,7 @@ export class QueryGameStats extends plugin {
     if (hint) return e.reply(hint)
     const { qqAvatar, nickname } = await this.getTargetInfo(e, userId)
 
-    const userData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
+    const userData = await resolveUserData(userId)
     const ID = this.getUserID(userData[userId], userId)
     if (!ID) {
       await e.reply([
@@ -249,7 +249,7 @@ export class QueryGameStats extends plugin {
 
     const { qqAvatar, nickname } = await this.getTargetInfo(e, userId)
 
-    const userData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
+    const userData = await resolveUserData(userId)
     const input = (rawInput || '').trim()
     const index = Number(input) || false
 

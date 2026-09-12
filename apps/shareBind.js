@@ -12,7 +12,7 @@
  */
 import { Config, PluginName } from '#components'
 import {
-  AT_HEAD, AT_TAIL, shouldQuote,
+  AT_HEAD, AT_TAIL, shouldQuote, maskToken,
   readShareConfig, probeShare, isShareReady, getShareStatus, getBoundIds, getCurrentId, pushBind
 } from '#utils'
 import { enableSharing, disableSharing, getUserShareState } from '../utils/shareUsers.js'
@@ -26,12 +26,7 @@ const fmtTime = ts => {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** 令牌只露头尾，免得在群里贴出去 */
-const maskToken = token => {
-  const text = String(token || '')
-  if (text.length <= 10) return text ? '已配置' : '未配置'
-  return `${text.slice(0, 6)}…${text.slice(-4)}`
-}
+/** 令牌只露头尾，免得在群里贴出去（实现已挪到 utils/shareStore.js，两个 app 共用一份） */
 
 export class ShareBind extends plugin {
   constructor () {

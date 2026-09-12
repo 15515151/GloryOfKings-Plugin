@@ -27,7 +27,7 @@ import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
 import {
   shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind,
-  getShareStatus, querySharedBind
+  getShareStatus, querySharedBind, maskToken
 } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'

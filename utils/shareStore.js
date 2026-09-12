@@ -35,6 +35,19 @@ const CACHE_FILE = path.join(PluginData, 'share', 'idcache.yaml')
 const CACHE_SCHEMA = 1
 
 /**
+ * 令牌在群里露个形就够，别整串贴出去。
+ *
+ * 放在这里而不是各自 app 里：`#营地共享`（用户侧）和 `#营地共享库`
+ * （主人侧）都要显示令牌，两份实现早晚会分叉 —— 真踩过：shareDeploy 引用了
+ * shareBind 里的私有函数，运行到那行才 `ReferenceError: maskToken is not defined`。
+ */
+export const maskToken = token => {
+  const text = String(token || '')
+  if (text.length <= 10) return text ? '已配置' : '未配置'
+  return `${text.slice(0, 6)}…${text.slice(-4)}`
+}
+
+/**
  * 本地缓存的存活时间。
  *
  * 只有 5 秒 —— 它现在唯一的作用是「同一个用户连发几条指令时不重复问服务端」，
@@ -565,6 +578,37 @@ export async function resolveCurrentId (userId, options = {}) {
   const result = await resolveCurrentIdInner(userId, options)
   // 把「该说哪句话」一并带出去，省得十几个调用点各自写一遍 source 判断
   return { ...result, hint: result.source === 'degraded' ? SHARE_DEGRADED_HINT : NOT_BOUND_HINT }
+}
+
+/**
+ * 读绑定表；**本机没有这个人的绑定时**先去共享库问一次、落下来，再读。
+ *
+ * 给「直接读 `UserData.yaml`」的那批指令用（`#查询战绩`、`#王者主页`、各种表现…）。
+ * 它们在本地找不到人就回一张「怎么获取营地ID」的教程图 —— 可用户明明在别的机器人上
+ * 绑过，只是本机没这份记录。
+ *
+ * 为什么单开一个函数：下发（`adoptSharedBind`）原本只挂在 `resolveCurrentId` 里，
+ * 而这批指令**压根不调它**，所以永远等不到下发 —— 落地等于白做了。把它们逐个改成
+ * 调 `resolveCurrentId` 也行，但每处都要重写一遍「重新读文件、重新取当前号」，
+ * 十几处一定会有漏。这里一次读全表，调用方拿到的就是落地之后的表，写法跟原来一样。
+ *
+ * 「本机已有绑定」的零网络开销：`getBoundIds` 命中就直接返回，连内存缓存都不查。
+ */
+export async function resolveUserData (userId) {
+  const qq = String(userId ?? '').trim()
+
+  if (qq && !getBoundIds(qq).length) {
+    try {
+      const { campId } = await resolveCurrentId(qq)
+      // 拿到就说明 adoptSharedBind 已经写进文件了，重读一次即可
+      if (campId) return readUserData()
+    } catch {
+      // 共享库是别人搭的、随时可能下线：它出任何事都只能是「这次查不到」，
+      // 不能让用户的指令跟着失败。读不到就按本机没有处理
+    }
+  }
+
+  return readUserData()
 }
 
 async function resolveCurrentIdInner (userId, { share = true } = {}) {

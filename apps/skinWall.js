@@ -1,7 +1,7 @@
 // 皮肤墙功能：营地皮肤列表接口调用逻辑参考自 https://github.com/KimigaiiWuyi/WzryUID
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import common from '../../../lib/common/common.js'
-import { ApiService, readYamlFile, getLocalImage, getUserAvatar, getPvpSkinCover, Button, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote, resolveMemberName, isQQNumber, SZ_ORDER, tierRank, pickTierText, QUALITY_STATS, countQuality, cleanImageCache, resolveCacheMaxBytes } from '#utils'
+import { ApiService, readYamlFile, getLocalImage, getUserAvatar, getPvpSkinCover, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote, resolveMemberName, isQQNumber, SZ_ORDER, tierRank, pickTierText, QUALITY_STATS, countQuality, cleanImageCache, resolveCacheMaxBytes } from '#utils'
 import path from 'path'
 import { PluginData } from '#components'
 
@@ -139,8 +139,7 @@ export class SkinWall extends plugin {
       nickname = await resolveMemberName(e.group, userId)
     }
 
-    const userFilePath = path.join(PluginData, 'UserData.yaml')
-    const allUserData = readYamlFile(userFilePath) || {}
+    const allUserData = await resolveUserData(userId)
     const userInfo = allUserData[userId]
 
     const ID = msgID || (userInfo && userInfo.ids && userInfo.ids.length

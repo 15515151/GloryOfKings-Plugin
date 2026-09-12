@@ -1,6 +1,6 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import common from '../../../lib/common/common.js'
-import { ApiService, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { ApiService, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import path from 'path'
 import { PluginData, PluginPath } from '#components'
 import moment from 'moment'
@@ -26,8 +26,8 @@ export class MyKingHomepage extends plugin {
     })
   }
 
-  getUserInfo(userId) {
-    const allUserData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
+  async getUserInfo(userId) {
+    const allUserData = await resolveUserData(userId)
     return allUserData[userId]
   }
 
@@ -36,7 +36,7 @@ export class MyKingHomepage extends plugin {
     const input = stripAtText(e.msg).replace(/^#王者(主页|卡片|信息)\s*/, '').trim()
     const { userId, hint } = await resolveTargetUserId(e)
     if (hint) return e.reply(hint)
-    const userInfo = this.getUserInfo(userId)
+    const userInfo = await this.getUserInfo(userId)
     const ids = userInfo?.ids || []
 
     if (!ids.length) {
@@ -68,7 +68,7 @@ export class MyKingHomepage extends plugin {
   async allKingHomepage(e) {
     const { userId, hint } = await resolveTargetUserId(e)
     if (hint) return e.reply(hint)
-    const userInfo = this.getUserInfo(userId)
+    const userInfo = await this.getUserInfo(userId)
     const ids = userInfo?.ids || []
 
     if (!ids.length) {

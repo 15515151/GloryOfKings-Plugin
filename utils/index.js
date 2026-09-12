@@ -122,6 +122,8 @@ export { getCurrentId, getBoundIds, readUserData } from './localBind.js'
  */
 export {
   resolveCurrentId,
+  resolveUserData,
+  maskToken,
   invalidateShareCache,
   isShareReady,
   readShareConfig,

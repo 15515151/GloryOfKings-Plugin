@@ -1,6 +1,6 @@
 import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { ApiService, readYamlFile, Button, parsePerfArgs, seasonNo, AT_HEAD, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { ApiService, readYamlFile, Button, parsePerfArgs, seasonNo, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import { PluginData, PluginPath } from '#components'
 import { summarizeProfile } from '../utils/profileSummary.js'
 import { getHeroNameMap } from '../utils/pushStore.js'
@@ -46,7 +46,7 @@ export class SeasonPage extends plugin {
     const withMaster = mode === '赛季'
     const { userId, hint } = await resolveTargetUserId(e)
     if (hint) return e.reply(hint)
-    const userData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
+    const userData = await resolveUserData(userId)
     const input = stripAtText(e.msg).replace(new RegExp(`^#${mode}表现\\s*`), '').trim()
     const userInfo = userData[userId]
     const args = parsePerfArgs(input)
