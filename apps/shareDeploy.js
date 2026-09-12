@@ -232,16 +232,19 @@ export class ShareDeploy extends plugin {
   }
 
   /**
-   * 结果里可能有令牌，不能往群里发。
+   * 结果里可能有令牌或者别人的 QQ，不能往群里发。
    * 群里执行时把详情走私聊，群里只留一句「发你私聊了」。
+   *
+   * @param {string} [hint] 群里那句提示。默认按「内容敏感」写，
+   *   发令牌那种要显式传一句更贴切的，不然会张冠李戴（同步结果说成「带令牌」）
    */
-  async replySafely (e, text) {
+  async replySafely (e, text, { hint } = {}) {
     if (!e.isGroup) return e.reply(text, shouldQuote())
 
     const delivered = await sendMaster(text)
     await e.reply(
       delivered
-        ? '结果里带令牌，已经私聊发你了'
+        ? (hint || '结果不太方便发在群里，已经私聊发你了')
         : '⚠️ 私聊发不出去（机器人可能没加你好友），改成私聊我再来一次吧',
       shouldQuote()
     )
@@ -342,7 +345,7 @@ export class ShareDeploy extends plugin {
         '',
         '⚠️ 这么跑是明文 HTTP，令牌会明文过网络。介意的话在前面配个 HTTPS 反代' +
         '（server/README.md 里有 nginx 示例），再把 .env 里的 GOK_HOST 改成 127.0.0.1。'
-      ].join('\n'))
+      ].join('\n'), { hint: '结果里带令牌，已经私聊发你了' })
     } catch (error) {
       logger.error(`[${PluginName}] 部署共享库失败：${error?.stack || error}`)
       return this.replySafely(e, `❌ 部署失败：${error?.message || error}`)
@@ -515,7 +518,7 @@ export class ShareDeploy extends plugin {
           ? '地址用的是你已经配好的那个。'
           : `⚠️ 你还没配过共享库地址，上面那行里的「你的服务器IP」要换成真实的（带 ${server.port} 端口）。`,
         '想看谁在用、或者踢掉谁：#营地共享库接入方'
-      ].join('\n'))
+      ].join('\n'), { hint: '结果里带令牌，已经私聊发你了' })
     } catch (error) {
       logger.error(`[${PluginName}] 签发共享库令牌失败：${error?.message || error}`)
       return e.reply(`签发失败：${error?.message || error}`, shouldQuote())
