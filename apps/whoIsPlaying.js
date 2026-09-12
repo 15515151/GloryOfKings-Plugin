@@ -47,7 +47,7 @@ export class WhoIsPlaying extends plugin {
       priority: 0,
       rule: [
         {
-          reg: '^#(谁在(打游戏|玩王者|上号|排位)|王者在线(列表|状态)?|在线列表)$',
+          reg: '^#(谁在(打游戏|打王者|玩王者|上号|排位)|王者在线(列表|状态)?|在线列表)$',
           fnc: 'list'
         }
       ]
