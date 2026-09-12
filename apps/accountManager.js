@@ -57,11 +57,12 @@ export class AccountManager extends plugin {
           permission: 'master'
         },
         {
-          reg: '^#营地QQ登录$',
+          // 大小写都认：手机上打「qq」比「QQ」顺手，用户不该为这个重发一遍
+          reg: '^#营地[Qq][Qq]登录$',
           fnc: 'qqScanLogin'
         },
         {
-          reg: '^#营地QQ全局登录$',
+          reg: '^#营地[Qq][Qq]全局登录$',
           fnc: 'qqGlobalScanLogin',
           permission: 'master'
         },
