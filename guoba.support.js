@@ -97,6 +97,18 @@ export function supportGuoba () {
           }
         },
         {
+          field: 'config.shareAdminSecret',
+          label: '共享库管理密钥（远程管理）',
+          bottomHelpMessage:
+            '服务端 .env 里的 GOK_ADMIN_SECRET。库跑在别的机器或 Docker 上时，' +
+            '配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库；本机部署用不到（插件自己读 .env）。' +
+            '这个密钥能签发、吊销令牌，权限很大，别往群里贴。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '64 位十六进制（openssl rand -hex 32 生成）'
+          }
+        },
+        {
           field: 'config.battleResultCron',
           label: '推送检查间隔',
           bottomHelpMessage: '战绩推送、开局提醒、上下线提醒共用这一个轮询，这里定的是「最快多久看一次」。每个订阅串行拉接口（间隔 800 毫秒）；真打完一局时会再拉一次详情并渲染图（约 1.3 秒）。玩家离线时实际间隔会按下面的退避倍数自动拉长，不会一直按这个频率打接口。设太短仍会触发营地频控 -30107，不建议低于 2 分钟。',

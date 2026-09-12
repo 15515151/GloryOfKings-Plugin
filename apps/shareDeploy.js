@@ -140,8 +140,12 @@ async function waitHealth (port, timeoutMs = 25000) {
   return null
 }
 
-async function issueToken (port, adminSecret, name) {
-  const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/tokens`, {
+/**
+ * 管理接口的调用统一走 base（如 http://127.0.0.1:8787 或已接入的共享库地址）：
+ * 本机部署和远程部署（另一台机器 / Docker）用的是同一套端点，只有 base 不同。
+ */
+async function issueToken (base, adminSecret, name) {
+  const res = await fetch(`${base}/api/v1/admin/tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Admin-Secret': adminSecret },
     body: JSON.stringify({ name: name || '本机机器人' }),
@@ -155,9 +159,9 @@ async function issueToken (port, adminSecret, name) {
   return res.json()
 }
 
-async function probeAdmin (port, adminSecret) {
+async function probeAdmin (base, adminSecret) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/stats`, {
+    const res = await fetch(`${base}/api/v1/admin/stats`, {
       headers: { 'X-Admin-Secret': adminSecret },
       signal: AbortSignal.timeout(5000)
     })
@@ -168,9 +172,9 @@ async function probeAdmin (port, adminSecret) {
 }
 
 /** 列出已签发的接入方。返回 null 表示连不上服务端 */
-async function listClients (port, adminSecret) {
+async function listClients (base, adminSecret) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/tokens`, {
+    const res = await fetch(`${base}/api/v1/admin/tokens`, {
       headers: { 'X-Admin-Secret': adminSecret },
       signal: AbortSignal.timeout(5000)
     })
@@ -182,9 +186,9 @@ async function listClients (port, adminSecret) {
 }
 
 /** 吊销一个接入方。返回 false 表示没这个 id 或者连不上 */
-async function revokeClient (port, adminSecret, id) {
+async function revokeClient (base, adminSecret, id) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/tokens/${id}`, {
+    const res = await fetch(`${base}/api/v1/admin/tokens/${id}`, {
       method: 'DELETE',
       headers: { 'X-Admin-Secret': adminSecret },
       signal: AbortSignal.timeout(5000)
@@ -490,13 +494,28 @@ export class ShareDeploy extends plugin {
       }
 
       const runtime = getShareStatus()
-      return e.reply([
+      const lines = [
         '🗂 营地ID共享库（这台是接入方）',
         `地址：${cfg.apiUrl}`,
         `令牌：${maskToken(cfg.token)}`,
         `本机缓存：${runtime.cachedCount} 条`,
         `连通性：${runtime.circuitOpen ? '暂时不可用（自动重试中）' : '正常'}`
-      ].join('\n'), shouldQuote())
+      ]
+
+      // 配了远程管理密钥的话，顺手把库的运维情况也带了 ——
+      // 库跑在别的机器/Docker 上时，这里就是主人唯一的「看一眼」入口
+      const admin = this.readServerEnv()
+      if (admin?.remote) {
+        const stats = await probeAdmin(admin.base, admin.adminSecret)
+        if (stats) {
+          lines.push(`库里数据：${stats.totalQq} 个人，${stats.totalRows} 条绑定`)
+          lines.push(`接入方：${stats.clientsActive}/${stats.clientsTotal} 个在用`)
+        } else {
+          lines.push('远程管理接口：连不上（地址或管理密钥不对）')
+        }
+      }
+
+      return e.reply(lines.join('\n'), shouldQuote())
     }
 
     const lines = ['🗂 营地ID共享库服务端']
@@ -629,15 +648,28 @@ export class ShareDeploy extends plugin {
 
   /* -------------------------------------------------- 给别人发令牌 */
 
-  /** 读服务端配置。没部署过（或密钥文件没了）返回 null */
+  /**
+   * 找管理接口的入口（发令牌 / 接入方 / 吊销都走它）。两种来源，本机优先：
+   *  - 本机部署：读 `.env` 里的管理密钥，base 用 127.0.0.1:端口
+   *  - 远程部署：另一台机器 / Docker 跑的库，管理密钥走配置（#营地共享库管理密钥），
+   *    base 就用已接入的共享库地址 —— 管理接口和接入接口本来就是同一个服务端
+   * 都没有返回 null
+   */
   readServerEnv () {
     const env = readEnvFile()
-    if (!env.GOK_ADMIN_SECRET) return null
-
-    return {
-      port: Number(env.GOK_PORT) || DEFAULT_PORT,
-      adminSecret: env.GOK_ADMIN_SECRET
+    if (env.GOK_ADMIN_SECRET) {
+      const port = Number(env.GOK_PORT) || DEFAULT_PORT
+      return { base: `http://127.0.0.1:${port}`, port, adminSecret: env.GOK_ADMIN_SECRET, remote: false }
     }
+
+    // 远程时地址必然来自已接入的配置（没有地址就进不了这个分支），
+    // 不存在「没配地址要拼占位符」的情况
+    const cfg = readShareConfig()
+    if (cfg.adminSecret && cfg.apiUrl) {
+      return { base: cfg.apiUrl, port: null, adminSecret: cfg.adminSecret, remote: true }
+    }
+
+    return null
   }
 
   /**
@@ -674,11 +706,15 @@ export class ShareDeploy extends plugin {
 
     const server = this.readServerEnv()
     if (!server) {
-      return e.reply('这台还没部署营地ID共享库，先发 #营地共享库部署', shouldQuote())
+      return e.reply(
+        '这台管不了共享库：没在本机部署（#营地共享库部署），也没配远程管理' +
+        '（#营地共享库管理密钥 <密钥>，地址用已接入的那个）',
+        shouldQuote()
+      )
     }
 
     try {
-      const created = await issueToken(server.port, server.adminSecret, label)
+      const created = await issueToken(server.base, server.adminSecret, label)
       const configured = readShareConfig().apiUrl
       const apiUrl = configured || `http://你的服务器IP:${server.port}`
 
@@ -744,10 +780,14 @@ export class ShareDeploy extends plugin {
   async clients (e) {
     const server = this.readServerEnv()
     if (!server) {
-      return e.reply('这台还没部署营地ID共享库，先发 #营地共享库部署', shouldQuote())
+      return e.reply(
+        '这台管不了共享库：没在本机部署（#营地共享库部署），也没配远程管理' +
+        '（#营地共享库管理密钥 <密钥>，地址用已接入的那个）',
+        shouldQuote()
+      )
     }
 
-    const list = await listClients(server.port, server.adminSecret)
+    const list = await listClients(server.base, server.adminSecret)
     if (list === null) {
       return e.reply('连不上服务端，先发 #营地共享库状态 看看', shouldQuote())
     }
@@ -777,10 +817,14 @@ export class ShareDeploy extends plugin {
 
     const server = this.readServerEnv()
     if (!server) {
-      return e.reply('这台还没部署营地ID共享库，先发 #营地共享库部署', shouldQuote())
+      return e.reply(
+        '这台管不了共享库：没在本机部署（#营地共享库部署），也没配远程管理' +
+        '（#营地共享库管理密钥 <密钥>，地址用已接入的那个）',
+        shouldQuote()
+      )
     }
 
-    const ok = await revokeClient(server.port, server.adminSecret, id)
+    const ok = await revokeClient(server.base, server.adminSecret, id)
     if (!ok) {
       return e.reply(`没找到 ${id} 号接入方，发 #营地共享库接入方 看看列表`, shouldQuote())
     }
