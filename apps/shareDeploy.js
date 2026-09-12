@@ -25,7 +25,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
-import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady } from '#utils'
+import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
 
@@ -607,11 +607,33 @@ export class ShareDeploy extends plugin {
     let pushed = 0
     let notShared = 0
     let failed = 0
+    // 记下具体是谁同步上去了。只有主人看得到，而且这条结果走私聊 ——
+    // 「谁开过共享」是别人的隐私，不该跟着发进群里
+    const pushedList = []
+
+    // 先把自己传上去：按下这条指令的**就是主人本人**，这个动作本身就是授权，
+    // 不该因为他「没发过 #开启营地ID共享」而把自己漏在外头 ——
+    // 主人踩过的就是这个坑：两台都同步了，对方还是说他没绑定
+    const selfQQ = String(e.user_id || '')
+    const selfIds = Array.isArray(store[selfQQ]?.ids) ? store[selfQQ].ids : []
+    if (selfQQ && selfIds.length) {
+      const own = await pushBind(selfQQ, selfIds, selfIds[store[selfQQ].current] || '')
+      if (own.ok) {
+        pushed += 1
+        pushedList.push(selfQQ)
+      } else {
+        failed += 1
+      }
+    }
 
     for (const qq of users) {
+      if (qq === selfQQ) continue // 自己上面已经传过
+
       const result = await reconcileNow(qq)
-      if (result === 'shared') pushed += 1
-      else if (result === 'not-shared') notShared += 1
+      if (result === 'shared') {
+        pushed += 1
+        pushedList.push(qq)
+      } else if (result === 'not-shared') notShared += 1
       else failed += 1
 
       // 串行 + 小间隔，别把自己打出一串 429
@@ -626,9 +648,15 @@ export class ShareDeploy extends plugin {
       `· 没开共享、跳过：${notShared} 人`
     ]
     if (failed) lines.push(`· 失败：${failed} 人（连不上或者额度用完，稍后再试）`)
+    if (pushedList.length) lines.push('', `同步上去的是：${pushedList.join('、')}`)
 
-    lines.push('', '跳过的那批不是出错 —— 是库里本来就没他们的记录，说明他们没开共享，不该替他们传。')
+    lines.push(
+      '',
+      '跳过的不是出错 —— 他们从没发过 #开启营地ID共享，按规矩不替他们传。',
+      '想让谁进库，让 TA 自己发一次 #开启营地ID共享 或者 #同步营地ID共享。'
+    )
 
-    return e.reply(lines.join('\n'), shouldQuote())
+    // 结果里有别人的 QQ，群里执行时走私聊
+    return this.replySafely(e, lines.join('\n'))
   }
 }
