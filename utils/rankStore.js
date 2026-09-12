@@ -48,11 +48,12 @@ const CODE_PROFILE_HIDDEN = -10107
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
- * 不可见字符：零宽空格/连接符、方向标记与隔离符、word joiner、弃用格式符、BOM、
+ * 不可见字符：C0/C1 控制符（含 DELETE U+007F，实测营地昵称里带过）、
+ * 零宽空格/连接符、方向标记与隔离符、word joiner、弃用格式符、BOM、
  * 变体选择符，以及不占字形的空格（U+2000~200A、U+202F、U+205F、U+3000、韩文填充符）。
  * 营地昵称里很常见（有人专门拿它们做「隐形名」），保留下来整行看着就是空的。
  */
-const INVISIBLE_RE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\uFE00-\uFE0F\u3164\u2000-\u200A\u202F\u205F\u3000]/g
+const INVISIBLE_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\uFE00-\uFE0F\u3164\u2000-\u200A\u202F\u205F\u3000]/g
 
 /**
  * Unicode 私有使用区（BMP 的 U+E000~F8FF 与 15/16 平面）。

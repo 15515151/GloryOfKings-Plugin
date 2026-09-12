@@ -1196,7 +1196,7 @@ export function hasOnlineSignal (state) {
  *
  * @param {object} opts
  * @param {boolean} opts.battleOn 订阅开了战绩推送
- * @param {boolean} opts.onlineOn 订阅开了上下线提醒
+ * @param {boolean} opts.onlineOn 调用方传的是**采集开关**（online 或 onlineStatus 任一），不是播报开关
  * @param {object|null} opts.state 本轮的 profile 结果
  * @param {object} opts.sub 订阅项，读 lastOnlineState 判「是不是刚下线那一轮」
  * @returns {boolean}
@@ -1206,13 +1206,18 @@ export function needBattleList ({ battleOn, onlineOn, state, sub = {} } = {}) {
   if (!onlineOn || !hasOnlineSignal(state)) return battleOn
 
   const online = toInt(state.gameOnline) !== 0
+  // 「游戏中」单独拎出来：影子订阅（只采集不播报）靠它决定要不要补拉一次战绩列表。
+  // 不能把 online 直接改成「含 2」——justWentOffline 复用了 online，一改「刚下线」就失灵
+  const playing = toInt(state.gameOnline) === 2
   const wasOnline = sub.lastOnlineState !== undefined &&
     sub.lastOnlineState !== null &&
     String(sub.lastOnlineState) !== '' &&
     String(sub.lastOnlineState) !== '0'
   const justWentOffline = !online && wasOnline
 
-  return battleOn ? (online || justWentOffline) : justWentOffline
+  // 只采集（onlineStatus）的订阅在「游戏中」时也要拉一次：英雄只在战绩列表里，
+  // 不拉的话 #谁在打游戏 会出现「正在对局却没有英雄」的空行
+  return battleOn ? (online || justWentOffline) : (justWentOffline || playing)
 }
 
 /**

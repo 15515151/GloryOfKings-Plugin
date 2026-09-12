@@ -3,10 +3,14 @@
  *
  * **这条指令一次营地请求都不发。** 数据全部来自战绩推送轮询顺手留下的观测快照
  * （apps/gameRecordPush.js 的 observeSnapshot 写进 GameRecordPush.yaml）：
- *   lastGaming      本轮观测到在不在对局中（'1' / ''）
+ *   lastGaming      本轮观测到在不在**对局**中（'1' / ''）—— 只认战绩列表的 isGaming
  *   lastGamingHero  在对局时用的英雄 heroId
  *   lastOnlineState 营地的 gameOnline 三态（0 离线 / 1 在线 / 2 游戏中）
  *   lastSeenAt      这份快照的观测时刻，用来判数据够不够新
+ *
+ * 注意 lastGaming 与 lastOnlineState=2 是**两件事**：后者只表示游戏客户端开着
+ * （大厅、匹配中、翻战绩都算 2），不等于在对局。图上因此分「正在对局」和
+ * 「客户端在线」两组，后者的人没有英雄可显示。
  *
  * 所以它只覆盖「开过战绩推送或上下线提醒的人」——这正是想被看到的那批人，
  * 而且不给营地增加任何负载。反过来说，快照的新鲜度受推送的自适应退避影响：
@@ -101,6 +105,8 @@ export class WhoIsPlaying extends plugin {
 
     const playing = []
     const justEnded = []
+    // 游戏客户端开着但没在对局（大厅/匹配中）：既不是真在打，也不是单纯在线，单独一组
+    const inGameIdle = []
     const online = []
     const offline = []
     // 只开了战绩推送、还没攒到过快照的订阅：既不算在线也不算离线，单独说一句
@@ -118,6 +124,8 @@ export class WhoIsPlaying extends plugin {
       else if (row.gaming) playing.push(row)
       // 刚打完的排在在线前面：它比「只是在线」更能说明刚才在干嘛
       else if (row.justEnded) justEnded.push(row)
+      // 客户端开着但没在打，比「只是在线」更明确一点，排在在线前面
+      else if (row.idleInGame) inGameIdle.push(row)
       else if (row.state !== 0) online.push(row)
       // 营地不给这个号的在线状态（快照里 lastOnlineState 是空串，不是 '0'）：
       // 报「离线」是假的，归到「还没采集到状态」里
@@ -126,7 +134,7 @@ export class WhoIsPlaying extends plugin {
     }
 
     // 最近观测到的排前面：同一组里时间戳越新越可信
-    for (const list of [playing, justEnded, online, offline, unknown]) list.sort((a, b) => b.seenAt - a.seenAt)
+    for (const list of [playing, justEnded, inGameIdle, online, offline, unknown]) list.sort((a, b) => b.seenAt - a.seenAt)
 
     // 同名去重：两个 QQ 绑了同一个营地号时，营地昵称是同一个，图上会出现两格
     // 一模一样的名字（实测有 groupIndex 里 3220564986 / 3667259455 都绑 1807995411）。
@@ -138,9 +146,9 @@ export class WhoIsPlaying extends plugin {
     //
     // ⚠️ 跨组不去重：一个人若同时出现在「正在对局」和「离线」里，那是数据的错，
     // 不是重名，这里只在一组内部去重，别把跨组的情况也吞掉。
-    for (const list of [playing, justEnded, online, offline, unknown]) dedupeByName(list)
+    for (const list of [playing, justEnded, inGameIdle, online, offline, unknown]) dedupeByName(list)
 
-    const groups = { playing, justEnded, online, offline, unknown }
+    const groups = { playing, justEnded, inGameIdle, online, offline, unknown }
     const img = await this.shot(e, groups, here, now)
 
     await e.reply([
@@ -150,10 +158,10 @@ export class WhoIsPlaying extends plugin {
   }
 
   /** 出图。失败返回 null，由调用方回落到文字名单 */
-  async shot (e, { playing, justEnded, online, offline, unknown }, here, now) {
-    const total = playing.length + justEnded.length + online.length + offline.length + unknown.length
+  async shot (e, { playing, justEnded, inGameIdle, online, offline, unknown }, here, now) {
+    const total = playing.length + justEnded.length + inGameIdle.length + online.length + offline.length + unknown.length
     // 最新一份快照的时刻 —— 整张图的新鲜度就看它
-    const newest = Math.max(0, ...[...playing, ...justEnded, ...online, ...offline].map(row => row.seenAt))
+    const newest = Math.max(0, ...[...playing, ...justEnded, ...inGameIdle, ...online, ...offline].map(row => row.seenAt))
 
     try {
       return await puppeteer.screenshot('WhoIsPlaying', {
@@ -169,6 +177,7 @@ export class WhoIsPlaying extends plugin {
         updateText: newest ? `${agoText(newest, now)}更新` : '',
         playing,
         justEnded,
+        inGameIdle,
         online,
         offline,
         unknown,
@@ -244,6 +253,13 @@ function buildRow (qq, sub, heroMap, now) {
   const endedAt = Number(sub?.lastGameEndAt) || 0
   const justEnded = !gaming && endedAt > 0 && now - endedAt <= ENDED_WINDOW
 
+  // 「客户端在线」：营地显示在游戏里（gameOnline=2）但没在对局 —— 大厅、匹配中、翻战绩。
+  //
+  // lastGaming 现在只信战绩列表的 isGaming，跟 gameOnline=2 不再是同一件事，
+  // 所以这一类要单独拎出来：别混进「正在对局」（会显示成对局却没有英雄），
+  // 也别混进「在线」（那是 gameOnline=1，"游戏没开"）。
+  const idleInGame = !gaming && hasState && state === 2
+
   return {
     qq: String(qq),
     // 游戏昵称（营地 roleName）：图上必须有名字，不允许退回画 QQ 号。
@@ -258,9 +274,12 @@ function buildRow (qq, sub, heroMap, now) {
     // 模板用的三个字段：英雄头像 / 状态文字 / 相对时间
     heroName: heroId ? (heroMap[heroId] || `英雄${heroId}`) : '',
     heroIcon: heroIconUrl(heroId),
-    stateText: ONLINE_LABEL[state] || '在线',
+    // 「游戏中」这个词留给「正在对局」，客户端开着但没打就用「客户端在线」，
+    // 免得两组文案撞词、看图上分不清谁真在打
+    stateText: idleInGame ? '客户端在线' : (ONLINE_LABEL[state] || '在线'),
     state,
     hasState,
+    idleInGame,
     seenAt,
     agoText: seenAt ? agoText(seenAt, now) : '',
     stale: seenAt > 0 && now - seenAt > STALE_MS,
@@ -307,7 +326,7 @@ function agoText (seenAt, now) {
 }
 
 /** 拼最终文案 */
-function renderText ({ playing, justEnded, online, offline, unknown, now }) {
+function renderText ({ playing, justEnded, inGameIdle, online, offline, unknown, now }) {
   const lines = ['🎮 谁在打游戏']
 
   if (playing.length) {
@@ -327,15 +346,26 @@ function renderText ({ playing, justEnded, online, offline, unknown, now }) {
     }
   }
 
+  if (inGameIdle.length) {
+    lines.push('', `🎯 客户端在线（${inGameIdle.length}）`)
+    for (const row of inGameIdle) {
+      const extra = [row.rankText].filter(Boolean).join(' · ')
+      lines.push(`· ${row.name}${extra ? ` —— ${extra}` : ''}${row.stale ? `（${agoText(row.seenAt, now)}）` : ''}`)
+    }
+    lines.push('（游戏开着但没在对局，可能在大厅或匹配中）')
+  }
+
   if (online.length) {
     lines.push('', `🟢 在线（${online.length}）`)
     for (const row of online) {
       const extra = [row.onlineFor ? `在线 ${row.onlineFor}` : '', row.rankText].filter(Boolean).join(' · ')
-      lines.push(`· ${row.name} —— ${ONLINE_LABEL[row.state] || '在线'}${extra ? `（${extra}）` : ''}${row.stale ? `（${agoText(row.seenAt, now)}）` : ''}`)
+      lines.push(`· ${row.name} —— ${row.stateText}${extra ? `（${extra}）` : ''}${row.stale ? `（${agoText(row.seenAt, now)}）` : ''}`)
     }
   }
 
-  if (!playing.length && !online.length) {
+  // 「有人」指上面任何一组活人，别只看 playing/online —— 只有人客户端在线时
+  // 报「没人在线」会和上面那组自相矛盾
+  if (!playing.length && !justEnded.length && !inGameIdle.length && !online.length) {
     lines.push('', '暂时没人在线，都在摸鱼呢')
   }
 

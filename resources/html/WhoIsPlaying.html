@@ -58,12 +58,19 @@
     .who-state.on { background: rgba(111,211,155,0.16); color: #6fd39b; }
     .who-state.gaming { background: rgba(245,215,110,0.18); color: #f5d76e; }
     .who-state.ended-s { background: rgba(111,211,155,0.14); color: rgba(111,211,155,0.85); }
+    .who-state.lobby { background: rgba(122,168,255,0.14); color: rgba(122,168,255,0.9); }
     /* 刚打完的行：绿色左边框，和「正在对局」的金色区分开 */
     .who-row.ended {
       border-color: rgba(111,211,155,0.3);
       background: linear-gradient(100deg, rgba(111,211,155,0.08), rgba(255,255,255,0.03));
     }
     .who-row.ended .who-avatar { border-color: rgba(111,211,155,0.45); }
+    /* 客户端在线（游戏开着但没在对局）：冷色，跟金色「对局中」和绿色「刚打完」都分得开 */
+    .who-row.lobby {
+      border-color: rgba(122,168,255,0.26);
+      background: linear-gradient(100deg, rgba(122,168,255,0.07), rgba(255,255,255,0.03));
+    }
+    .who-row.lobby .who-avatar { border-color: rgba(122,168,255,0.4); }
     /* 右侧英雄：头像 + 名字 */
     .who-hero { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .who-hero img {
@@ -132,7 +139,7 @@
   <div class="section">
     <div class="section-title">
       正在对局
-      <span class="tip">英雄是本轮观测到的那一把</span>
+      <span class="tip">英雄就是当前这一把</span>
     </div>
     <div class="who-list">
       {{each playing row}}
@@ -191,6 +198,30 @@
   </div>
   {{/if}}
 
+  {{if inGameIdle.length}}
+  <div class="section">
+    <div class="section-title">
+      客户端在线（{{inGameIdle.length}}）
+      <span class="tip">游戏开着但没在对局，可能在大厅或匹配中</span>
+    </div>
+    <div class="who-list">
+      {{each inGameIdle row}}
+      <div class="who-row lobby">
+        <img class="who-avatar" src="{{row.avatar}}" alt="" onerror="this.style.visibility='hidden'">
+        <div class="who-main">
+          <div class="who-name">{{row.name}}</div>
+          <div class="who-meta">
+            {{if row.rankText}}<span class="rank">{{row.rankText}}</span>{{/if}}
+            {{if row.stale}}<span class="stale">{{row.agoText}}的数据</span>{{else}}{{row.agoText}}观测{{/if}}
+          </div>
+        </div>
+        <span class="who-state lobby">大厅中</span>
+      </div>
+      {{/each}}
+    </div>
+  </div>
+  {{/if}}
+
   {{if online.length}}
   <div class="section">
     <div class="section-title">
@@ -216,7 +247,7 @@
   </div>
   {{/if}}
 
-  {{if !playing.length && !online.length}}
+  {{if !playing.length && !justEnded.length && !inGameIdle.length && !online.length}}
   <div class="section">
     <div class="empty-tip">暂时没人在线，都在摸鱼呢</div>
   </div>

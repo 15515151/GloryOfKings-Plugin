@@ -687,8 +687,9 @@ export class GameRecordPush extends plugin {
       }),
       // 给 #谁在打游戏 用：那条指令一次营地请求都不发，只读这几个字段。
       // lastSeenAt 是本轮的观测时刻（判数据够不够新），lastGaming 是「此刻在不在对局中」。
-      // 在对局的判据两路都收：battle 路的 data.isGaming、online 路的 gameOnline===2。
-      // 后者单独存在的场景是只开了上下线提醒（那轮不一定拉战绩列表）
+      // 判据只认战绩列表的 isGaming —— 影子订阅在「游戏中」时也会补拉一次战绩列表
+      // （见 needBattleList），所以这条快照对每个人都拿得到英雄。gameOnline===2 单用
+      // 会推出没有英雄的「假对局」，已在 observeSnapshot 里弃用。
       ...observeSnapshot(state, data, nowMs, sub),
       // 游戏昵称单独并进来，理由见 roleNameFromState 的声明：它不从 state 走，
       // 因为 state 可能被判成「没在线信号」而整个丢掉
@@ -1031,18 +1032,32 @@ function observeSnapshot (state, data, nowMs, prev = {}) {
   // roleNameFromState 的声明：state 可能因为「营地问不出在线状态」被判成无效整个丢弃，
   // 而昵称是同一份响应里另一个独立字段，不该跟着一起没。
 
-  // 在对局中：战绩列表的 isGaming 最直接；只有 profile 时用 gameOnline===2
-  // （三态语义见 pushStore.fetchOnlineState，2 是「游戏中」，不等于一定在对局里）
-  const gaming = data ? Boolean(data.isGaming) : Number(state?.gameOnline) === 2
+  // 在对局中：**只信战绩列表的 isGaming**。
+  //
+  // 早先用 `state.gameOnline===2` 兜底（那轮没拉战绩列表时），后果是
+  // 「正在对局」被标出来、英雄却永远为空 —— 因为英雄只在 data.gaming.heroId 里，
+  // 而 gameOnline===2 只代表「客户端开着」（大厅、匹配中、翻战绩都算 2，见
+  // pushStore.fetchOnlineState 的三态注释）。两路判据必须同源，否则图上出现空行。
+  // 影子订阅现在会在「游戏中」时也拉一次战绩列表（见 needBattleList），英雄才有来源。
+  const gaming = data ? Boolean(data.isGaming) : false
   const prevGaming = String(prev?.lastGaming || '') === '1'
 
   patch.lastGaming = gaming ? '1' : ''
   patch.lastGamingHero = gaming ? String(data?.gaming?.heroId || '') : ''
+  // 营地给了 isGaming 却没给 heroId：没见过的组合，留一条痕迹方便回查，但不影响出图
+  if (gaming && !data?.gaming?.heroId) {
+    logger.debug(`[王者推送] ${prev.campId || ''} isGaming=true 但没给 heroId，本轮英雄留空`)
+  }
 
   // 「刚打完」：#谁在打游戏 要显示「X 分钟前刚结束」。
   // 只在 1 -> 0 的那一轮记时刻，之后每轮不再更新，相对时间才会往前走。
   // 反过来 0 -> 1 时清掉，否则上一局的结束时刻会一直挂着。
-  if (prevGaming && !gaming) patch.lastGameEndAt = String(nowMs)
+  //
+  // 判 1 -> 0 必须要求**这一轮真的拉到了战绩列表**（data 非空）：没拉到 data 时
+  // gaming 恒为 false（上面已收窄），不设防的话一次请求失败/频控就会被当成
+  // 「刚打完」，凭空冒出一条「刚刚结束」。存量里那些 lastGaming='1' 的老快照
+  // 也会在第一次读到时误入「刚打完」组，这条守卫把过渡期这一下挡掉。
+  if (data && prevGaming && !gaming) patch.lastGameEndAt = String(nowMs)
   else if (!prevGaming && gaming) patch.lastGameEndAt = ''
   else if (gaming) patch.lastGameEndAt = ''
 
