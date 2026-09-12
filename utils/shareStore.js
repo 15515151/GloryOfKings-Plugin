@@ -375,10 +375,10 @@ async function requestShare (cfg, qq, since) {
  *  - 每个 QQ 每小时最多一次
  *  - 本机没有绑定就什么都不做（没东西可传）
  */
-async function reconcileSharedUser (qq) {
+async function reconcileSharedUser (qq, { force = false } = {}) {
   try {
     const now = Date.now()
-    if (now - (lastReconcileAt.get(qq) || 0) < RECONCILE_INTERVAL_MS) return
+    if (!force && now - (lastReconcileAt.get(qq) || 0) < RECONCILE_INTERVAL_MS) return
     lastReconcileAt.set(qq, now)
 
     const cfg = readShareConfig()
@@ -405,6 +405,43 @@ async function reconcileSharedUser (qq) {
     }
   } catch (error) {
     warnOnce('reconcile', `[营地共享] 对账失败：${error?.message || error}`)
+  }
+}
+
+/**
+ * 手动对一次账（跳过每小时一次的节流）。给「手动同步」那两条指令用 ——
+ * 自动对账是后台跑的、又有一小时的节流，用户觉得「我明明开了共享对方却查不到」时
+ * 需要一个立刻能试的按钮。
+ *
+ * @returns {Promise<'shared'|'not-shared'|'failed'>}
+ *   shared    = 库里有他，本机绑定已经传上去了
+ *   not-shared= 库里没有他（没开共享，或者已经撤销了）
+ *   failed    = 连不上或配置不全
+ */
+export async function reconcileNow (userId) {
+  const qq = String(userId ?? '').trim()
+  if (!qq) return 'failed'
+
+  const cfg = readShareConfig()
+  if (!cfg.enabled || !cfg.apiUrl || !cfg.token) return 'failed'
+  if (circuitOpen()) return 'failed'
+
+  const ids = getBoundIds(qq)
+  if (!ids.length) return 'not-shared'
+
+  try {
+    const result = await requestShare(cfg, qq, 0)
+    if (!result?.campId) {
+      knownShared.delete(qq)
+      return 'not-shared'
+    }
+
+    knownShared.set(qq, true)
+    const pushed = await pushBind(qq, ids, getCurrentId(qq) || '')
+    return pushed.ok ? 'shared' : 'failed'
+  } catch (error) {
+    warnOnce('reconcile-now', `[营地共享] 手动对账失败：${error?.message || error}`)
+    return 'failed'
   }
 }
 

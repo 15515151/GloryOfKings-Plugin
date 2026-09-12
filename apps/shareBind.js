@@ -13,7 +13,7 @@
 import { Config, PluginName } from '#components'
 import {
   AT_HEAD, AT_TAIL, shouldQuote,
-  readShareConfig, probeShare, isShareReady, getShareStatus, getBoundIds
+  readShareConfig, probeShare, isShareReady, getShareStatus, getBoundIds, getCurrentId, pushBind
 } from '#utils'
 import { enableSharing, disableSharing, getUserShareState } from '../utils/shareUsers.js'
 import { markDeclined, clearDeclined } from '../utils/shareNotifyState.js'
@@ -45,6 +45,9 @@ export class ShareBind extends plugin {
         { reg: `${AT_HEAD}#(开启|打开)营地(ID)?共享${AT_TAIL}`, fnc: 'enable' },
         { reg: `${AT_HEAD}#(关闭|取消)营地(ID)?共享${AT_TAIL}`, fnc: 'disable' },
         { reg: `${AT_HEAD}#营地(ID)?共享(状态|情况)${AT_TAIL}`, fnc: 'status' },
+        // 重传一次。自动同步有小时级节流、又在后台跑，用户觉得「对方查不到我」时
+        // 需要一个立刻能按的按钮
+        { reg: `${AT_HEAD}#同步营地(ID)?共享${AT_TAIL}`, fnc: 'resync' },
 
         { reg: '^#营地共享库$', fnc: 'masterPanel', permission: 'master' },
         { reg: '^#接入营地共享库$', fnc: 'masterEnable', permission: 'master' },
@@ -77,6 +80,35 @@ export class ShareBind extends plugin {
       '已关闭营地ID共享，之前传上去的也删了。',
       '别的机器人几秒内就看不到了。'
     ].join('\n'), shouldQuote())
+  }
+
+  /**
+   * 手动重传一次。
+   *
+   * 自动同步是后台跑的、还带一小时节流，用户「我明明开了共享对方却查不到」时
+   * 需要一个立刻能按的按钮 —— 尤其是他刚在别处改完绑定、不想等的时候。
+   */
+  async resync (e) {
+    if (!isShareReady()) {
+      return e.reply('本机器人还没接入营地ID共享库，请主人发 #营地共享库', shouldQuote())
+    }
+
+    const qq = String(e.user_id)
+    const ids = getBoundIds(qq)
+
+    if (!ids.length) {
+      return e.reply('你还没有绑定营地ID，先发 #绑定营地 [营地ID]', shouldQuote())
+    }
+    if (!getUserShareState(qq).enabled) {
+      return e.reply('你还没开启共享，先发 #开启营地ID共享', shouldQuote())
+    }
+
+    const result = await pushBind(qq, ids, getCurrentId(qq) || '')
+    if (!result.ok) {
+      return e.reply(`同步失败：${result.message}`, shouldQuote())
+    }
+
+    return e.reply(`已重新同步 ${result.count} 个营地ID 到共享库，别的机器人现在就能查到。`, shouldQuote())
   }
 
   async status (e) {

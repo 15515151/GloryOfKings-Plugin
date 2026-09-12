@@ -25,7 +25,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
-import { shouldQuote, readShareConfig } from '#utils'
+import { shouldQuote, readShareConfig, readUserData, reconcileNow } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
 
@@ -223,7 +223,10 @@ export class ShareDeploy extends plugin {
         // 是「设置我自己要用的令牌」，两者只差一个字，用户会搞混
         { reg: '^#营地共享库?发令牌\\s*(.+)$', fnc: 'issue', permission: 'master' },
         { reg: '^#营地共享库?接入方$', fnc: 'clients', permission: 'master' },
-        { reg: '^#营地共享库?吊销\\s*(\\d+)$', fnc: 'revoke', permission: 'master' }
+        { reg: '^#营地共享库?吊销\\s*(\\d+)$', fnc: 'revoke', permission: 'master' },
+        // 全量对账。自动对账是「用户发指令时后台顺手做」、还带一小时节流，
+        // 这条是人工兜底：刚接入完、或者怀疑某些人没传上去时手动推一遍
+        { reg: '^#营地共享库?同步$', fnc: 'syncAll', permission: 'master' }
       ]
     })
   }
@@ -551,8 +554,7 @@ export class ShareDeploy extends plugin {
     return e.reply(lines.join('\n'), shouldQuote())
   }
 
-  /** 吊销。对方那边的机器人再请求会直接连不上（403） */
-  async revoke (e) {
+  /** 吊销。对方那边的机器人再请求会直接连不上（403） */  async revoke (e) {
     const id = Number(e.msg.match(/^#营地共享库吊销\s*(\d+)$/)?.[1])
 
     const server = this.readServerEnv()
@@ -570,5 +572,60 @@ export class ShareDeploy extends plugin {
       `已吊销 ${id} 号。对方的机器人下次请求共享库会被拒（他自己的其他功能不受影响）。`,
       shouldQuote()
     )
+  }
+
+  /**
+   * 把本机**所有**绑定过的用户全量对一遍账。
+   *
+   * 自动对账是「用户发指令时后台顺手做」、还带一小时节流；这条是人工兜底 ——
+   * 刚接入完共享库、或者怀疑某些人的数据没传上去时手动推一遍。
+   *
+   * 只处理「库里本来就有他记录」的人。库里没有说明他没开共享，不该替他传 ——
+   * 这是「共享」而不是「上传所有人的数据」，边界必须守住。
+   */
+  async syncAll (e) {
+    const server = this.readServerEnv()
+    if (!server) {
+      return e.reply('这台还没部署营地ID共享库，先发 #营地共享库部署', shouldQuote())
+    }
+
+    const store = readUserData()
+    const users = Object.keys(store).filter(qq => Array.isArray(store[qq]?.ids) && store[qq].ids.length)
+    if (!users.length) {
+      return e.reply('本机还没有人绑定过营地ID', shouldQuote())
+    }
+
+    // 每人至少一次请求，串行做完要一会儿；先给回执，不然以为指令死了
+    await e.reply(
+      `正在对账本机 ${users.length} 个绑定用户，大约 ${Math.ceil(users.length * 0.3)} 秒…`,
+      shouldQuote()
+    )
+
+    let pushed = 0
+    let notShared = 0
+    let failed = 0
+
+    for (const qq of users) {
+      const result = await reconcileNow(qq)
+      if (result === 'shared') pushed += 1
+      else if (result === 'not-shared') notShared += 1
+      else failed += 1
+
+      // 串行 + 小间隔，别把自己打出一串 429
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+
+    logger.mark(`[${PluginName}] 共享库全量对账完成：同步 ${pushed}、未共享 ${notShared}、失败 ${failed}`)
+
+    const lines = [
+      '全量对账完成：',
+      `· 同步上去：${pushed} 人`,
+      `· 没开共享、跳过：${notShared} 人`
+    ]
+    if (failed) lines.push(`· 失败：${failed} 人（连不上或者额度用完，稍后再试）`)
+
+    lines.push('', '跳过的那批不是出错 —— 是库里本来就没他们的记录，说明他们没开共享，不该替他们传。')
+
+    return e.reply(lines.join('\n'), shouldQuote())
   }
 }

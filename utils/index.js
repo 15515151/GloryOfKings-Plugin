@@ -130,6 +130,8 @@ export {
   pushBind,
   revokeBind,
   probeShare,
+  reconcileNow,
+  resetCircuitBreaker,
   NOT_BOUND_HINT,
   SHARE_DEGRADED_HINT
 } from './shareStore.js'
