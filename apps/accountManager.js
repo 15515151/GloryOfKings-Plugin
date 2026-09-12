@@ -1,8 +1,9 @@
 import path from 'path'
-import { writeYamlFile, readYamlFile, ApiService, cache, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { Config, PluginData, PluginPath } from '#components'
 import authStore from '../utils/authStore.js'
+import { fetchRoleNames } from '../utils/roleName.js'
 import {
   createWechatLoginSession,
   waitForWechatLogin
@@ -130,7 +131,7 @@ export class AccountManager extends plugin {
   }
 
   // 新增公共方法处理HTML生成
-  async generateAccountManageHTML(type, wzryId, idList) {
+  async generateAccountManageHTML(type, wzryId, idList, wzryName = '') {
     const parsedFuncs = [
       { cmd: '#绑定营地', example: '示例: #绑定营地 123' },
       { cmd: '#营地ID / #王者ID / #我的ID / #我的王者ID', example: '示例: #我的王者ID' },
@@ -147,6 +148,7 @@ export class AccountManager extends plugin {
       tplFile: 'plugins/GloryOfKings-Plugin/resources/html/accountManage.html',
       type,
       wzryId,
+      wzryName,
       idList,
       parsedFuncs,
       timestamp: new Date().toLocaleString()
@@ -308,8 +310,10 @@ export class AccountManager extends plugin {
       current: 0
     }
 
-    const idList = this.formatIdList(currentUserInfo)
-    const html = await this.generateAccountManageHTML('绑定', wzryId, idList)
+    // 昵称跟 ID 一起给：只看一串数字认不出是谁的号
+    const nameMap = await fetchRoleNames(currentUserInfo.ids, botUserId)
+    const idList = this.formatIdList(currentUserInfo, nameMap)
+    const html = await this.generateAccountManageHTML('绑定', wzryId, idList, nameMap[wzryId])
     await e.reply([html, Button.homepage(wzryId)])
   }
 
@@ -334,7 +338,9 @@ export class AccountManager extends plugin {
     const { userData } = this.getUserData(userId)
 
     if (userData[userId].ids.includes(wzryId)) {
-      await e.reply(['该ID已经绑定过了', Button.homepage(wzryId)])
+      // 重复绑定也把昵称带上，不然用户看着两个数字对不上是谁
+      const nameMap = await fetchRoleNames([wzryId], userId)
+      await e.reply([`该ID已经绑定过了${nameMap[wzryId] ? `：${wzryId} ${nameMap[wzryId]}` : ''}`, Button.homepage(wzryId)])
       return
     }
 
@@ -362,9 +368,11 @@ export class AccountManager extends plugin {
     userData[userId].current = index
     this.saveUserData(filePath, userData)
 
-    const idList = this.formatIdList(userData[userId])
-    const html = await this.generateAccountManageHTML('切换', userData[userId].ids[index], idList)
-    await e.reply([html, Button.homepage(userData[userId].ids[index])])
+    const currentId = userData[userId].ids[index]
+    const nameMap = await fetchRoleNames(userData[userId].ids, userId)
+    const idList = this.formatIdList(userData[userId], nameMap)
+    const html = await this.generateAccountManageHTML('切换', currentId, idList, nameMap[currentId])
+    await e.reply([html, Button.homepage(currentId)])
   }
 
   // 删除ID
@@ -394,8 +402,10 @@ export class AccountManager extends plugin {
 
     this.saveUserData(filePath, userData)
 
-    const idList = this.formatIdList(userData[userId])
-    const html = await this.generateAccountManageHTML('删除', deletedId, idList)
+    // 被删的 ID 已经不在列表里了，单独带上一起查，卡片顶部才认得出删的是谁
+    const nameMap = await fetchRoleNames([deletedId, ...userData[userId].ids], userId)
+    const idList = this.formatIdList(userData[userId], nameMap)
+    const html = await this.generateAccountManageHTML('删除', deletedId, idList, nameMap[deletedId])
     await e.reply([html, Button.account(userData[userId].ids)])
   }
 
@@ -412,10 +422,10 @@ export class AccountManager extends plugin {
       ], shouldQuote())
     }
 
-    const nameMap = await this.fetchRoleNames(userData[userId].ids, userId)
+    const nameMap = await fetchRoleNames(userData[userId].ids, userId)
     const idList = this.formatIdList(userData[userId], nameMap)
     const currentId = userData[userId].ids[userData[userId].current] || userData[userId].ids[0]
-    const html = await this.generateAccountManageHTML('查询', currentId, idList)
+    const html = await this.generateAccountManageHTML('查询', currentId, idList, nameMap[currentId])
     await e.reply([html, Button.account(userData[userId].ids)])
   }
 
@@ -425,35 +435,6 @@ export class AccountManager extends plugin {
       segment.image(path.join(PluginPath, 'resources', 'img', '营地ID获取.png')),
       Button.bind()
     ], shouldQuote())
-  }
-
-  // 拉取各营地ID对应的游戏昵称，失败不影响列表展示；结果缓存 10 分钟
-  async fetchRoleNames(ids, botUserId) {
-    const nameMap = {}
-
-    for (const id of ids) {
-      const cacheKey = `gok:roleName:${id}`
-      const cached = cache.get(cacheKey)
-      if (cached !== undefined) {
-        nameMap[id] = cached
-        continue
-      }
-
-      let roleName = ''
-      try {
-        const profile = await ApiService.getProfile(id, String(botUserId))
-        const { roleList = [], targetRoleId } = profile?.data || {}
-        const role = roleList.find(item => item.roleId === targetRoleId) || roleList[0]
-        roleName = role?.roleName || ''
-      } catch (error) {
-        logger.debug(`[营地ID] 获取 ${id} 游戏昵称失败: ${error.message}`)
-      }
-
-      cache.set(cacheKey, roleName, 600)
-      nameMap[id] = roleName
-    }
-
-    return nameMap
   }
 
   // 格式化ID列表显示
@@ -850,12 +831,29 @@ export class AccountManager extends plugin {
     return true
   }
 
+  // 营地账号的显示名：优先游戏昵称，取不到退回营地昵称，都没有就只剩 ID
+  async describeCampAccount(account) {
+    const campUserId = String(account?.userId || '')
+    if (!campUserId) return ''
+
+    let roleName = ''
+    try {
+      const nameMap = await fetchRoleNames([campUserId], account.ownerBotUserId || '')
+      roleName = nameMap[campUserId] || ''
+    } catch (error) {
+      logger.debug(`[营地账号] 获取 ${campUserId} 昵称失败: ${error.message}`)
+    }
+
+    const name = roleName || account.nickname || account.userName || ''
+    return name ? `${campUserId} ${name}` : campUserId
+  }
+
   async shareCampAuth(e) {
     const campUserId = e.msg.replace(/^#共享营地账号\s*/, '').trim()
 
     try {
       const account = authStore.setShared(campUserId, true)
-      await e.reply(`已将营地账号 ${account.userId} 加入共享账号池，当前状态：${account.authInvalid ? '失效' : '正常'}`)
+      await e.reply(`已将营地账号 ${await this.describeCampAccount(account)} 加入共享账号池，当前状态：${account.authInvalid ? '失效' : '正常'}`)
     } catch (error) {
       await e.reply(error.message)
     }
@@ -867,7 +865,7 @@ export class AccountManager extends plugin {
 
     try {
       const account = authStore.setShared(campUserId, false)
-      await e.reply(`已将营地账号 ${account.userId} 从共享账号池移除，当前状态：${account.authInvalid ? '失效' : '正常'}`)
+      await e.reply(`已将营地账号 ${await this.describeCampAccount(account)} 从共享账号池移除，当前状态：${account.authInvalid ? '失效' : '正常'}`)
     } catch (error) {
       await e.reply(error.message)
     }

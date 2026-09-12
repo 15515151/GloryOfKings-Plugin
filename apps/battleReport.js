@@ -31,6 +31,7 @@ import {
   isMonthlyPushDay
 } from '../utils/reportStore.js'
 import { loadPushList, savePushList, mergeSubState, disableSubFlag, subGroups, withSubGroup, withoutSubGroup, sleep, REQUEST_INTERVAL } from '../utils/pushStore.js'
+import { fetchRoleNames } from '../utils/roleName.js'
 import {
   getCurrentId, getUserAvatar, Button, shouldQuote, readYamlFile, parsePerfArgs,
   AT_HEAD, stripAtText, resolveTargetUserId, pickGroupSafe, isBlackUser
@@ -303,10 +304,12 @@ export class BattleReport extends plugin {
     const period = { daily: '每天', weekly: '每周', monthly: '每月' }[kind]
     const unit = { daily: '天', weekly: '周', monthly: '月' }[kind]
     const scope = { daily: '当日', weekly: '整周', monthly: '本月' }[kind]
+    // 营地ID旁边带上昵称，用户才认得出推的是哪个号
+    const roleName = (await fetchRoleNames([campId], qq))[campId] || ''
 
     return e.reply([
       [
-        `✅ 已开启战绩${label}推送（营地ID ${campId}）`,
+        `✅ 已开启战绩${label}推送（营地ID ${campId}${roleName ? ` ${roleName}` : ''}）`,
         `${period}会在本群发一张${scope}战绩总结`,
         cron ? `推送时间：${cron}` : '（主人还没配推送时间，暂时不会自动发）',
         `没有对局的${unit}不会推送。想立刻看发送 #王者${label}`,

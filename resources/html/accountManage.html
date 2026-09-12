@@ -69,6 +69,11 @@
         color: var(--c-primary);
     }
 
+    .header-info .target-name {
+        color: var(--c-primary);
+        font-weight: bold;
+    }
+
     .panel {
         background: var(--c-panel);
         border: 1px solid var(--c-border-soft);
@@ -164,7 +169,7 @@
                     <h1>账号状态看板 <span class="badge-tag tag-{{type}}">{{type}}操作</span></h1>
                 </div>
                 <div class="header-info">
-                    <div class="info-time">{{timestamp}} | 目标: {{wzryId}}</div>
+                    <div class="info-time">{{timestamp}} | 目标: {{wzryId}}{{if wzryName}} <span class="target-name">{{wzryName}}</span>{{/if}}</div>
                 </div>
             </div>
 

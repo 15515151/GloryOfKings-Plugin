@@ -59,6 +59,7 @@ import {
   sleep
 } from '../utils/pushStore.js'
 import { fetchBattleDetail, renderBattleDetail } from '../utils/battleDetailImage.js'
+import { fetchRoleNames } from '../utils/roleName.js'
 import { getAllBindings } from '../utils/rankStore.js'
 import { membersOfGroup, groupsOfMember, isIndexReady, getGroupIndex, refreshGroupIndex } from '../utils/groupIndex.js'
 import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser } from '#utils'
@@ -194,9 +195,11 @@ export class GameRecordPush extends plugin {
     savePushList(list)
 
     const cron = readConfig().battleResultCron || ''
+    // 营地ID旁边带上昵称，用户才认得出推的是哪个号
+    const roleName = (await fetchRoleNames([campId], qq))[campId] || ''
     await e.reply([
       [
-        `✅ 已开启战绩推送（营地ID ${campId}）`,
+        `✅ 已开启战绩推送（营地ID ${campId}${roleName ? ` ${roleName}` : ''}）`,
         '打完一局会在本群播报战绩（带你的名字，不 @ 你），开局也会提醒一次',
         cron ? `检查间隔：最快 ${cron}，你离线时会自动拉长以免触发营地频控` : '',
         '想在别的群也收，去那个群再发一次这条指令',
@@ -327,7 +330,7 @@ export class GameRecordPush extends plugin {
 
     const cron = readConfig().battleResultCron || ''
     await e.reply([
-      `✅ 已开启上下线提醒（营地ID ${campId}）`,
+      `✅ 已开启上下线提醒（营地ID ${campId}${state.roleName ? ` ${state.roleName}` : ''}）`,
       `当前状态：${ONLINE_LABEL[state.gameOnline] || '未知'}`,
       '上线和下线时会在本群播报（带你的名字，不 @ 你），下线时附带本次战绩总结',
       cron ? `检查间隔：最快 ${cron}，你离线时会自动拉长以免触发营地频控` : '',
