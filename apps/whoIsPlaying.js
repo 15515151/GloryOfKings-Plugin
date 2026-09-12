@@ -128,6 +128,18 @@ export class WhoIsPlaying extends plugin {
     // 最近观测到的排前面：同一组里时间戳越新越可信
     for (const list of [playing, justEnded, online, offline, unknown]) list.sort((a, b) => b.seenAt - a.seenAt)
 
+    // 同名去重：两个 QQ 绑了同一个营地号时，营地昵称是同一个，图上会出现两格
+    // 一模一样的名字（实测有 groupIndex 里 3220564986 / 3667259455 都绑 1807995411）。
+    // 这不是两个人重名，是**同一个营地身份被两个 QQ 共用** —— 图上就该只出现一次。
+    //
+    // 在分组之后、出图之前做：各组的条数就是去重后的条数，图上「离线（13）」和
+    // 实际格子数不会对不上。保留观测最新的那条（上面刚按 seenAt 降序排过，
+    // 所以每组取第一个即可），后出现的同名片整条丢掉。
+    //
+    // ⚠️ 跨组不去重：一个人若同时出现在「正在对局」和「离线」里，那是数据的错，
+    // 不是重名，这里只在一组内部去重，别把跨组的情况也吞掉。
+    for (const list of [playing, justEnded, online, offline, unknown]) dedupeByName(list)
+
     const groups = { playing, justEnded, online, offline, unknown }
     const img = await this.shot(e, groups, here, now)
 
@@ -175,6 +187,36 @@ export class WhoIsPlaying extends plugin {
       return ''
     }
   }
+}
+
+/**
+ * 把一组展示行按游戏昵称去重，**原地**改数组。
+ *
+ * 场景：两个 QQ 绑了同一个营地号，营地昵称自然一样，图上会出现两格完全相同的名字。
+ * 那是同一个营地身份被两个 QQ 共用，图上只该出现一次。
+ *
+ * 调用前该组已按 seenAt 降序排过，所以保留遇到的第一条（观测最新的那份快照）。
+ * 名字为「召唤师」占位的不参与去重 —— 那是好几个拿不到昵称的人共用的占位名，
+ * 去重会把不同的人吞成一个。
+ *
+ * @param {Array<{name: string}>} list 已排序的展示行数组，原地修改
+ */
+function dedupeByName (list) {
+  const seen = new Set()
+  const kept = []
+  for (const row of list) {
+    const name = String(row?.name || '')
+    // 占位名不参与去重：那是「拿不到昵称」的多人共用值，去重会把不同的人吞成一个
+    if (!name || name === '召唤师') {
+      kept.push(row)
+      continue
+    }
+    if (seen.has(name)) continue
+    seen.add(name)
+    kept.push(row)
+  }
+  list.length = 0
+  list.push(...kept)
 }
 
 /** 把一条订阅整成展示用的行 */
