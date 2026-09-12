@@ -89,7 +89,7 @@ export class GokBlackList extends plugin {
 
     return e.reply([
       `已拉黑 ${userId}`,
-      '他发的王者指令都不会有回应，之前订阅的战绩推送、日报周报月报也会停下来，群报和排行榜里也不再统计他',
+      '他发的指令不再有回应，已开的推送、日报和统计也都停',
       '订阅还留着，想恢复发送 #王者取消拉黑@他'
     ].join('\n'), shouldQuote())
   }

@@ -338,7 +338,7 @@ export class ShareDeploy extends plugin {
         '✅ 营地ID共享库部署好了',
         '',
         `地址：http://你的服务器IP:${port}`,
-        '（IPv4 和 IPv6 都在监听；把服务器防火墙和云主机安全组的这个端口放行，外面就能连）',
+        '（防火墙 + 云主机安全组放行这个端口）',
         `进程：${PROC_NAME}，由 pm2 托管`,
         `数据：${path.relative(PluginPath, DB_FILE)}`,
         `密钥：${path.relative(PluginPath, ENV_FILE)}（别外泄）`,
@@ -352,8 +352,7 @@ export class ShareDeploy extends plugin {
         `3. 发 #营地共享库令牌 ${created.token}`,
         '4. 发 #接入营地共享库',
         '',
-        '⚠️ 这么跑是明文 HTTP，令牌会明文过网络。介意的话在前面配个 HTTPS 反代' +
-        '（server/README.md 里有 nginx 示例），再把 .env 里的 GOK_HOST 改成 127.0.0.1。'
+        '⚠️ 明文 HTTP，令牌明文过网络。介意就配 HTTPS 反代（server/README.md 有示例）。'
       ].join('\n'), { hint: '结果里带令牌，已经私聊发你了' })
     } catch (error) {
       logger.error(`[${PluginName}] 部署共享库失败：${error?.stack || error}`)
@@ -375,10 +374,9 @@ export class ShareDeploy extends plugin {
       const cfg = readShareConfig()
       if (!isShareReady()) {
         return e.reply([
-          '这台机器人没在本机搭库，也还没接入别人的库。',
-          '',
-          '自己搭一个：#营地共享库部署',
-          '接入别人的：#营地共享库 看当前状态和接入办法'
+          '这台还没接入共享库。',
+          '自己搭：#营地共享库部署',
+          '接入别人的：#营地共享库'
         ].join('\n'), shouldQuote())
       }
 
@@ -388,9 +386,7 @@ export class ShareDeploy extends plugin {
         `地址：${cfg.apiUrl}`,
         `令牌：${maskToken(cfg.token)}`,
         `本机缓存：${runtime.cachedCount} 条`,
-        `连通性：${runtime.circuitOpen ? '暂时不可用（自动重试中）' : '正常'}`,
-        '',
-        '服务端进程不在本机，所以这里看不到「跑没跑」—— 那要看搭库那台。'
+        `连通性：${runtime.circuitOpen ? '暂时不可用（自动重试中）' : '正常'}`
       ].join('\n'), shouldQuote())
     }
 
@@ -447,14 +443,12 @@ export class ShareDeploy extends plugin {
 
     if (!confirmed) {
       return e.reply([
-        '要卸载营地ID共享库吗？这一步只停服务，其余都留着：',
+        '要卸载营地ID共享库吗？这一步只停服务，密钥和数据都留着：',
         '',
         `· 密钥：${path.relative(PluginPath, ENV_FILE)}`,
         `· 数据：${path.relative(PluginPath, DB_FILE)}`,
         '',
-        '刻意保留是有原因的：库里存的是 QQ 的加盐哈希，**换一把盐这些哈希就全废了**，',
-        '所以密钥必须跟数据同生共死。重新部署能接着用原来的数据。',
-        '想彻底清干净就把上面这两个自己删掉。',
+        '重新部署能接着用。想彻底清干净就把上面两个自己删掉。',
         '',
         '确认就发：#营地共享库卸载确认'
       ].join('\n'), shouldQuote())
@@ -746,11 +740,7 @@ export class ShareDeploy extends plugin {
     if (failed) lines.push(`· 失败：${failed} 人（连不上或者额度用完，稍后再试）`)
     if (pushedList.length) lines.push('', `同步上去的是：${pushedList.join('、')}`)
 
-    lines.push(
-      '',
-      '跳过的不是出错 —— 他们从没发过 #开启营地ID共享，按规矩不替他们传。',
-      '想让谁进库，让 TA 自己发一次 #开启营地ID共享 或者 #同步营地ID共享。'
-    )
+    if (notShared) lines.push('', '没传的让他们自己发一次 #开启营地ID共享。')
 
     // 结果里有别人的 QQ，群里执行时走私聊
     return this.replySafely(e, lines.join('\n'))
@@ -773,22 +763,13 @@ export class ShareDeploy extends plugin {
     if (result.error) return e.reply(`查不了：${result.error}`, shouldQuote())
 
     if (!result.found) {
-      return e.reply([
-        `库里没有 ${qq} 的共享记录。`,
-        '',
-        '也就是说这个 QQ 从没发过 #开启营地ID共享 或 #同步营地ID共享。',
-        '得让 TA 本人在任意一台接入了同一个库的机器人上发一次 —— 别人替不了。'
-      ].join('\n'), shouldQuote())
+      return e.reply(`库里没有 ${qq}，让 TA 自己发一次 #开启营地ID共享`, shouldQuote())
     }
 
     return e.reply([
       `库里 ${qq} 的记录：`,
       `营地ID：${result.campIds.length ? result.campIds.join('、') : '（空）'}`,
-      `当前号：${result.current || '—'}`,
-      '',
-      '库里有 TA，别的机器人查询时就该拿得到。那边要是还说没绑定，多半是：',
-      '· 那台上 TA 自己绑过号 → 本地优先，用的是本机那个',
-      '· 那台没有可用的全局账号 → 会提示「共享库暂时用不了」而不是「没绑定」'
+      `当前号：${result.current || '—'}`
     ].join('\n'), shouldQuote())
   }
 }

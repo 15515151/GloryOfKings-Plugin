@@ -97,7 +97,7 @@ export class AllSeasonPerformance extends plugin {
     const played = all.filter(s => s.games > 0)
 
     if (!played.length) {
-      await e.reply(mode === '巅峰' ? '暂无巅峰赛数据，可能是从未参与巅峰赛或对方隐藏了战绩' : '暂无排位赛数据')
+      await e.reply(mode === '巅峰' ? '暂无巅峰赛数据（没打过或对方隐藏了）' : '暂无排位赛数据')
       return
     }
 

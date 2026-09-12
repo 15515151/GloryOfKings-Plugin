@@ -452,7 +452,7 @@ export class AccountManager extends plugin {
         const html = await this.generateAccountManageHTML('查询', currentId, idList, nameMap[currentId])
 
         return e.reply([
-          '下面这些是从共享库拿到的（你在别的机器人上绑过）；本机还没绑，要用推送之类的功能得在本机绑一次',
+          '这些是从共享库拿到的，本机还没绑（推送类功能要本机绑一次）',
           html,
           Button.bind()
         ], shouldQuote())
@@ -613,7 +613,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n如果你之后希望把这个账号加入公用池，可由主人使用【#共享营地账号 营地ID】开启共享。'
+        '\n想加进公用池就请主人发【#共享营地账号 营地ID】。'
       ]
     })
   }
@@ -691,7 +691,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n如果你之后希望把这个账号加入公用池，可由主人使用【#共享营地账号 营地ID】开启共享。'
+        '\n想加进公用池就请主人发【#共享营地账号 营地ID】。'
       ]
     })
   }
@@ -787,7 +787,7 @@ export class AccountManager extends plugin {
       '默认全局账号已更新。',
       `\n营地ID：${savedAccount.userId || '未获取'}`,
       `\n昵称：${savedAccount.nickname || savedAccount.userName || '未命名'}`,
-      '\n登录态有效期通常约 30 天左右，失效后请重新使用【#营地wx全局登录】或【#营地QQ全局登录】扫码更新。'
+      '\n有效期约 30 天，失效了重发这条指令。'
     ])
   }
 

@@ -203,10 +203,10 @@ export class GameRecordPush extends plugin {
     await e.reply([
       [
         `✅ 已开启战绩推送（营地ID ${campId}${roleName ? ` ${roleName}` : ''}）`,
-        '打完一局会在本群播报战绩（带你的名字，不 @ 你），开局也会提醒一次',
-        cron ? `检查间隔：最快 ${cron}，你离线时会自动拉长以免触发营地频控` : '',
-        '想在别的群也收，去那个群再发一次这条指令',
-        '想连上下线一起提醒发送 #开启上下线提醒'
+        '打完一局会在本群播报（不 @ 你），开局也提醒一次',
+        cron ? `检查间隔：最快 ${cron}` : '',
+        '别的群也要收，去那个群再发一次',
+        '连上下线一起提醒发 #开启上下线提醒'
       ].filter(Boolean).join('\n'),
       Button.push(true)
     ], shouldQuote())
@@ -302,9 +302,8 @@ export class GameRecordPush extends plugin {
     // 这时开上下线提醒等于永远推不出东西，直接拦下来说清楚要去开哪个开关。
     if (!hasOnlineSignal(state)) {
       await e.reply(
-        '❌ 营地没有返回你的在线状态，开了也推不出来\n' +
-        '请到王者营地 →「我的」→ 设置 → 隐私设置，打开在线状态（对外展示）相关授权，再重新开启\n' +
-        '（这个开关和战绩隐私是分开的两个，战绩推送不受它影响，可以照常用 #开启战绩推送）',
+        '❌ 营地没返回你的在线状态，开了也推不出来。\n' +
+        '去王者营地 →「我的」→ 设置 → 隐私设置，打开在线状态（对外展示），再重新开启',
         shouldQuote()
       )
       return
@@ -335,9 +334,9 @@ export class GameRecordPush extends plugin {
     await e.reply([
       `✅ 已开启上下线提醒（营地ID ${campId}${state.roleName ? ` ${state.roleName}` : ''}）`,
       `当前状态：${ONLINE_LABEL[state.gameOnline] || '未知'}`,
-      '上线和下线时会在本群播报（带你的名字，不 @ 你），下线时附带本次战绩总结',
-      cron ? `检查间隔：最快 ${cron}，你离线时会自动拉长以免触发营地频控` : '',
-      '关闭发送 #关闭上下线提醒'
+      '上下线会在本群播报（不 @ 你），下线时附本次战绩总结',
+      cron ? `检查间隔：最快 ${cron}` : '',
+      '关闭发 #关闭上下线提醒'
     ].filter(Boolean).join('\n'), shouldQuote())
   }
 
@@ -404,7 +403,7 @@ export class GameRecordPush extends plugin {
     await e.reply(
       alreadyShown
         ? '在线状态展示本来就在开着，无需重复开启'
-        : '✅ 已开启在线状态展示\n绑了营地号、又在本群，就会出现在 #谁在打游戏 里\n上下线不会播报（要播报请另发 #开启上下线提醒），关闭发送 #关闭在线状态展示',
+        : '✅ 已开启在线状态展示\n本群会出现在 #谁在打游戏 里（上下线不播报，要播报发 #开启上下线提醒）\n关闭发 #关闭在线状态展示',
       shouldQuote()
     )
   }
@@ -418,10 +417,10 @@ export class GameRecordPush extends plugin {
     if (!sub) {
       await e.reply([
         [
-          '你还没有开启任何推送',
-          '在群里发送 #开启战绩推送 推每局战绩',
-          '发送 #开启上下线提醒 推上下线',
-          cfg.onlineReminder === false ? '（注意：插件的推送总开关当前是关闭的）' : ''
+          '你还没开启推送',
+          '推每局战绩：#开启战绩推送',
+          '推上下线：#开启上下线提醒',
+          cfg.onlineReminder === false ? '⚠️ 插件推送总开关关着，开了也不会推' : ''
         ].filter(Boolean).join('\n'),
         Button.push(false)
       ], shouldQuote())
@@ -445,11 +444,11 @@ export class GameRecordPush extends plugin {
         `营地ID：${sub.campId || '—'}`,
         `推送群：${groups.length ? groups.join('、') : '—'}${groups.length > 1 ? `（共 ${groups.length} 个）` : ''}`,
         `检查间隔：最快 ${cfg.battleResultCron || '—'}`,
-        `离线退避：${cap === 1 ? '已关闭（恒定按上面的间隔）' : `离线时最长拉到 ${cap} 倍间隔`}${skip > 0 ? `｜当前退避中，还要跳过 ${skip} 轮` : ''}`,
-        cfg.onlineReminder === false ? '⚠️ 插件推送总开关已关闭，暂时不会推送' : '',
-        battleOn ? '关闭战绩推送发送 #关闭战绩推送' : '开启战绩推送发送 #开启战绩推送',
-        onlineOn ? '关闭上下线提醒发送 #关闭上下线提醒' : '开启上下线提醒发送 #开启上下线提醒',
-        statusOn ? '关闭在线状态展示发送 #关闭在线状态' : '开启在线状态展示发送 #开启在线状态'
+        `离线退避：${cap === 1 ? '关闭（按上面间隔）' : `最长拉到 ${cap} 倍间隔`}${skip > 0 ? `｜退避中，还要跳 ${skip} 轮` : ''}`,
+        cfg.onlineReminder === false ? '⚠️ 插件推送总开关关着，暂时不会推' : '',
+        battleOn ? '关闭：#关闭战绩推送' : '开启：#开启战绩推送',
+        onlineOn ? '关闭：#关闭上下线提醒' : '开启：#开启上下线提醒',
+        statusOn ? '关闭：#关闭在线状态' : '开启：#开启在线状态'
       ].filter(Boolean).join('\n'),
       Button.push(battleOn)
     ], shouldQuote())

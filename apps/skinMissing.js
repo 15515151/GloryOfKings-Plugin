@@ -284,7 +284,7 @@ function buildOverviewView (conf, owned, countInfo, name) {
     heroTop: [...byHero.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP_HERO)
       .map(([hero, num]) => ({ hero, num })),
     fullText: '全部皮肤都到手了',
-    footText: '总数按营地全量配置表算，不含经典皮肤（原皮人人都有）\n发送 #缺皮肤 妲己 看单个英雄缺哪几款'
+    footText: '不含经典皮肤（原皮人人都有）\n#缺皮肤 妲己 能看单个英雄缺哪几款'
   }
 }
 
