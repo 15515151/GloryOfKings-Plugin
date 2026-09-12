@@ -27,10 +27,12 @@ import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
 import {
   shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady, pushBind,
-  getShareStatus, querySharedBind, maskToken
+  getShareStatus, querySharedBind, maskToken, AT_HEAD,
+  stripAtText, pickAtText, resolveTargetUserId, resolveMemberName
 } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
+import { sendPrivate } from '../utils/privateMsg.js'
 
 const SERVER_DIR = path.join(PluginPath, 'server')
 const ENV_FILE = path.join(SERVER_DIR, '.env')
@@ -223,8 +225,10 @@ export class ShareDeploy extends plugin {
         { reg: '^#营地共享库?卸载(确认)?$', fnc: 'uninstall', permission: 'master' },
         // 「发令牌」是给**别人**的机器人签的（部署时那条是给自己用的）。
         // 刻意不叫 `#营地共享库令牌列表` 之类：既有那条 `#营地共享库令牌 <值>`
-        // 是「设置我自己要用的令牌」，两者只差一个字，用户会搞混
-        { reg: '^#营地共享库?发令牌\\s*(.+)$', fnc: 'issue', permission: 'master' },
+        // 是「设置我自己要用的令牌」，两者只差一个字，用户会搞混。
+        // - 备注是 `(.*)` 而不是 `(.+)`：@ 了人的话不写备注也说得通（拿 TA 的昵称当备注）
+        // - 加 AT_HEAD 是为了认「先 @ 人再发指令」这种写法（群里最常见的顺序）
+        { reg: `${AT_HEAD}#营地共享库?发令牌\\s*(.*)$`, fnc: 'issue', permission: 'master' },
         { reg: '^#营地共享库?接入方$', fnc: 'clients', permission: 'master' },
         { reg: '^#营地共享库?吊销\\s*(\\d+)$', fnc: 'revoke', permission: 'master' },
         // 全量对账。自动对账是「用户发指令时后台顺手做」、还带一小时节流，
@@ -515,13 +519,36 @@ export class ShareDeploy extends plugin {
   }
 
   /**
-   * 给**别人**的机器人签一个令牌。
+   * 给**别人**的机器人签一个令牌。两种发法：
    *
-   * 部署时自动签的那个是给自己用的，这个才是往外发的。回复里直接把「让对方发的三行」
-   * 拼好了，主人整段转发即可 —— 少一步手抄就少一次抄错。
+   *  - `#营地共享库发令牌 某某的机器人` —— 把「让对方发的三行」拼好回给主人，主人自己转
+   *  - `#营地共享库发令牌 @某某`        —— 直接私聊发给 TA，省掉主人转这一手
+   *
+   * ⚠️ 令牌**任何情况下都不出现在群里**（文件头第 1 条规矩）：@ 的那个人收不到时，
+   * 令牌退回私聊给主人，群里只说一句「没发出去」。
    */
   async issue (e) {
-    const note = String(e.msg.match(/^#营地共享库发令牌\s*(.+)$/)?.[1] || '').trim()
+    const note = stripAtText(e.msg).replace(/^#营地共享库?发令牌\s*/, '').trim()
+
+    // @ 的是谁。点选出来的 @ 带 e.at（QQ 号）；手打的「@昵称」消息里没有 at 段，
+    // 只能按名字去群成员里找（resolveTargetUserId 内部就是这么兜的）
+    let target = null
+    const atName = pickAtText(e.msg)
+    if ((e.at && !e.atme) || atName) {
+      let userId = e.at && !e.atme ? String(e.at) : ''
+      if (!userId) {
+        const resolved = await resolveTargetUserId(e)
+        if (resolved.hint) return e.reply(resolved.hint, shouldQuote())
+        userId = resolved.userId
+      }
+      target = { userId, name: (await resolveMemberName(e.group, userId)) || userId }
+    }
+
+    // 没写备注就拿被 @ 的人顶替，省得主人再想一个名字
+    const label = note || (target ? `${target.name} 的机器人` : '')
+    if (!label) {
+      return e.reply('加个备注（比如「某某的机器人」），或者 @ 一下要发给谁', shouldQuote())
+    }
 
     const server = this.readServerEnv()
     if (!server) {
@@ -529,27 +556,62 @@ export class ShareDeploy extends plugin {
     }
 
     try {
-      const created = await issueToken(server.port, server.adminSecret, note)
+      const created = await issueToken(server.port, server.adminSecret, label)
       const configured = readShareConfig().apiUrl
       const apiUrl = configured || `http://你的服务器IP:${server.port}`
 
-      logger.mark(`[${PluginName}] 已签发共享库令牌：${note}`)
+      const steps = [
+        `#营地共享库地址 ${apiUrl}`,
+        `#营地共享库令牌 ${created.token}`,
+        '#接入营地共享库'
+      ]
 
-      return this.replySafely(e, [
-        `📮 给「${note}」的令牌（只显示这一次，别弄丢）`,
+      const ownerText = [
+        `📮 给「${label}」的令牌（只显示这一次，别弄丢）`,
         '',
         created.token,
         '',
         '把下面三行整段发给对方，让 TA 在自己的机器人上依次发出来：',
-        `#营地共享库地址 ${apiUrl}`,
-        `#营地共享库令牌 ${created.token}`,
-        '#接入营地共享库',
+        ...steps,
         '',
         configured
           ? '地址用的是你已经配好的那个。'
           : `⚠️ 你还没配过共享库地址，上面那行里的「你的服务器IP」要换成真实的（带 ${server.port} 端口）。`,
         '想看谁在用、或者踢掉谁：#营地共享库接入方'
-      ].join('\n'), { hint: '结果里带令牌，已经私聊发你了' })
+      ].join('\n')
+
+      // 地址还没配过时，「三行」里的地址是个占位符，直接甩给对方只会让 TA 更迷糊 ——
+      // 所以这种情况不管 @ 没 @，都按老路子把结果留给主人
+      if (target && configured) {
+        const sent = await sendPrivate(target.userId, [
+          `🔑 「${label}」的营地ID共享库接入信息（只发这一次，别弄丢）`,
+          '',
+          '在你的机器人上依次发这三行就行：',
+          ...steps
+        ].join('\n'), { bot: e.bot })
+
+        if (sent.ok) {
+          logger.mark(`[${PluginName}] 共享库令牌已私聊给 ${target.userId}：${label}`)
+          return e.reply(`已经把「${label}」的令牌私聊发给 ${target.name} 了`, shouldQuote())
+        }
+
+        logger.mark(`[${PluginName}] 私聊 ${target.userId} 失败（${sent.reason}），令牌改发主人：${label}`)
+        const delivered = await sendMaster(ownerText)
+        return e.reply(
+          delivered
+            ? `私聊给 ${target.name} 没发出去（TA 多半没开临时会话），令牌已经私聊发给你了，你转给 TA 吧`
+            : `私聊给 ${target.name} 发不出去，你的私聊也没成功。你私聊我发一次这条指令，我把令牌发你`,
+          shouldQuote()
+        )
+      }
+
+      logger.mark(`[${PluginName}] 已签发共享库令牌：${label}`)
+
+      return this.replySafely(e, ownerText, {
+        hint: target
+          ? '地址还没配好，结果里带令牌，先私聊发你了'
+          : '结果里带令牌，已经私聊发你了'
+      })
     } catch (error) {
       logger.error(`[${PluginName}] 签发共享库令牌失败：${error?.message || error}`)
       return e.reply(`签发失败：${error?.message || error}`, shouldQuote())
@@ -582,7 +644,7 @@ export class ShareDeploy extends plugin {
       }
     }
 
-    lines.push('', '发给别人：#营地共享库发令牌 <备注>')
+    lines.push('', '发给别人：#营地共享库发令牌 <备注>（@一下群友就直接私聊发给 TA）')
     lines.push('踢掉一个：#营地共享库吊销 <序号>')
 
     return e.reply(lines.join('\n'), shouldQuote())
