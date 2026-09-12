@@ -37,12 +37,13 @@ export class ShareBind extends plugin {
       // 和插件其他新指令一致用 0：queryGameStats 的战绩正则是宽匹配，抢在它前面更稳
       priority: 0,
       rule: [
-        { reg: `${AT_HEAD}#(开启|打开)营地(ID)?共享${AT_TAIL}`, fnc: 'enable' },
-        { reg: `${AT_HEAD}#(关闭|取消)营地(ID)?共享${AT_TAIL}`, fnc: 'disable' },
-        { reg: `${AT_HEAD}#营地(ID)?共享(状态|情况)${AT_TAIL}`, fnc: 'status' },
+        // 这四条里夹着个 `ID`，用户手打多半是小写 —— 一律带 `i` 放宽（跟登录指令一个口径）
+        { reg: new RegExp(`${AT_HEAD}#(开启|打开)营地(ID)?共享${AT_TAIL}`, 'i'), fnc: 'enable' },
+        { reg: new RegExp(`${AT_HEAD}#(关闭|取消)营地(ID)?共享${AT_TAIL}`, 'i'), fnc: 'disable' },
+        { reg: new RegExp(`${AT_HEAD}#营地(ID)?共享(状态|情况)${AT_TAIL}`, 'i'), fnc: 'status' },
         // 重传一次。自动同步有小时级节流、又在后台跑，用户觉得「对方查不到我」时
         // 需要一个立刻能按的按钮
-        { reg: `${AT_HEAD}#同步营地(ID)?共享${AT_TAIL}`, fnc: 'resync' },
+        { reg: new RegExp(`${AT_HEAD}#同步营地(ID)?共享${AT_TAIL}`, 'i'), fnc: 'resync' },
 
         { reg: '^#营地共享库$', fnc: 'masterPanel', permission: 'master' },
         { reg: '^#接入营地共享库$', fnc: 'masterEnable', permission: 'master' },
