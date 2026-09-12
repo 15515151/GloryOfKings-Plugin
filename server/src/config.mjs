@@ -5,6 +5,7 @@
  * 它就和数据库躺在同一个备份里，「加盐哈希」的全部意义当场归零——拿到备份的人
  * 顺手就把盐也拿到了。所以缺了就直接拒绝启动，让部署的人自己生成、自己分开保管。
  */
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,6 +13,9 @@ import { fileURLToPath } from 'node:url'
 export const MIN_NODE_MAJOR = 24
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+/** 部署脚本把生成的两把密钥写在这里 */
+const ENV_FILE = path.join(SERVER_ROOT, '.env')
 
 /** 密钥最短长度。32 个字符对应 openssl rand -hex 32 的输出长度 */
 const MIN_SECRET_LENGTH = 32
@@ -73,13 +77,61 @@ function readInt (env, name, fallback, min, max) {
 }
 
 /**
- * @param {Record<string, string|undefined>} [env]
- * @returns {{host: string, port: number, dbPath: string, salt: string, adminSecret: string,
- *            trustProxy: boolean, publicUrl: string}}
+ * 解析 .env 文本。零依赖手写，只认 `KEY=VALUE` 和 `#` 注释。
+ *
+ * 换行按 /\r?\n/ 切而不是 '\n'：这个文件在 Windows 上打开过就会被写成 CRLF，
+ * 那时候每一行的值尾部都会挂着一个 \r，密钥里多一个看不见的字符就怎么都对不上。
  */
-export function loadConfig (env = process.env) {
-  const salt = readSecret(env, 'GOK_SALT')
-  const adminSecret = readSecret(env, 'GOK_ADMIN_SECRET')
+function parseDotEnv (text) {
+  const out = {}
+
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const eq = line.indexOf('=')
+    if (eq <= 0) continue
+
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+
+    // 去掉一层引号，值里带空格时这么写很自然
+    if (value.length >= 2 &&
+        ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1)
+    }
+
+    if (key) out[key] = value
+  }
+
+  return out
+}
+
+/**
+ * 读同目录的 .env。没有这个文件就返回空对象。
+ *
+ * 服务端自己认这个文件，而不是让 pm2 传 `--env-from-file`：
+ * 那个参数是较新版本才有的，老 pm2 上会直接启动失败，而这个文件本来就在手边。
+ */
+function loadDotEnv () {
+  try {
+    return parseDotEnv(fs.readFileSync(ENV_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * @param {Record<string, string|undefined>|null} [env] 传 null 表示用真实环境变量（.env 作为兜底）
+ * @returns {{host: string, port: number, dbPath: string, salt: string, adminSecret: string,
+ *            trustProxy: boolean, readCooldownMs: number, publicUrl: string}}
+ */
+export function loadConfig (env = null) {
+  // 先铺 .env 再让真实环境变量盖上去：命令行临时指定要能压过文件里的值
+  const merged = { ...loadDotEnv(), ...(env || process.env) }
+
+  const salt = readSecret(merged, 'GOK_SALT')
+  const adminSecret = readSecret(merged, 'GOK_ADMIN_SECRET')
 
   // 两个密钥共用一个值，等于把「签发 token 的钥匙」和「还原 QQ 的钥匙」绑在一起，
   // 泄露一个就同时丢两样
@@ -87,29 +139,36 @@ export function loadConfig (env = process.env) {
     fail('GOK_SALT 和 GOK_ADMIN_SECRET 不能是同一个值，它们必须各自独立生成。')
   }
 
-  const dbPath = String(env.GOK_DB || '').trim() || path.join(SERVER_ROOT, 'data', 'share.db')
-  const host = String(env.GOK_HOST || '').trim() || '127.0.0.1'
+  const dbPath = String(merged.GOK_DB || '').trim() || path.join(SERVER_ROOT, 'data', 'share.db')
 
-  // 监听回环 = 前面必然有反代（不然外面连不上），此时所有请求的 remoteAddress 都是
-  // 反代自己那个 IP。这种情况下不读 X-Forwarded-For，按 IP 的限流就退化成全局限流——
-  // 一个 60 次/分钟的桶会把整个服务卡死，谁都连不上。
+  // 默认**不指定**监听地址：交给 Node 自己挑 —— 系统有 IPv6 就绑 `::`，那是双栈地址，
+  // v4 和 v6 都能连；没有 IPv6 才退回 `0.0.0.0`。
   //
-  // 反过来，监听 0.0.0.0 时默认**不信**这个头：任何人都能伪造它绕过限流。
+  // 这里写死 `0.0.0.0` 是个坑：那**只开 IPv4**，纯 v6 的机器、或者从 v6 侧过来的请求
+  // 一律连不上，而 `ss` 看起来「明明在监听」。（bindv6only=0 的 Linux 上绑 `::` 才双栈。）
+  //
+  // 想强制只给本机/只给 v4，就显式设 GOK_HOST。
+  const host = String(merged.GOK_HOST || '').trim()
+
+  // 信任 X-Forwarded-For 的条件：
+  // - 监听回环 = 前面必然有反代（不然外面根本连不上），此时所有请求的 remoteAddress
+  //   都是反代那一个 IP，不读这个头的话按 IP 的限流会退化成全局限流，一个桶卡死所有人。
+  // - 绑在所有网卡（上面 host 为空的情形）= 直连公网，**默认不信**：任何人都能伪造这个头绕过限流。
   // GOK_TRUST_PROXY 显式设了就以它为准。
   const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  const trustProxyRaw = String(env.GOK_TRUST_PROXY || '').trim()
+  const trustProxyRaw = String(merged.GOK_TRUST_PROXY || '').trim()
 
   return {
     host,
-    port: readPort(env),
+    port: readPort(merged),
     dbPath,
     salt,
     adminSecret,
     trustProxy: trustProxyRaw === '' ? loopback : trustProxyRaw === '1',
     // (client, qq) 的响应冷却。0 = 关掉（压测和脱机测试时用），见 ratelimit.mjs 的 Cooldown
-    readCooldownMs: readInt(env, 'GOK_READ_COOLDOWN_MS', 60000, 0, 3600000),
+    readCooldownMs: readInt(merged, 'GOK_READ_COOLDOWN_MS', 60000, 0, 3600000),
     // 仅供日志与文档展示，服务本身不依赖它
-    publicUrl: String(env.GOK_PUBLIC_URL || '').trim()
+    publicUrl: String(merged.GOK_PUBLIC_URL || '').trim()
   }
 }
 

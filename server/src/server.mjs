@@ -76,13 +76,6 @@ export async function startServer () {
   const config = loadConfig()
   db = openDatabase(config.dbPath)
 
-  if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
-    log('warn',
-      `监听地址是 ${config.host}（非本机回环）。如果前面没有 HTTPS 反代，` +
-      'token 和 QQ 号会以明文经过网络，请确认这是你要的。'
-    )
-  }
-
   const limiters = {
     ipBucket: new TokenBucket(IP_RATE_PER_MINUTE, IP_BURST),
     globalRead: new WindowCounter(GLOBAL_READ_PER_MINUTE),
@@ -116,10 +109,14 @@ export async function startServer () {
 
   await new Promise((resolve, reject) => {
     server.once('error', reject)
-    server.listen(config.port, config.host, resolve)
+    // host 为空就**不传** host，让 Node 自己选：有 IPv6 时绑 `::`（双栈，v4/v6 都通），
+    // 没有才退回 `0.0.0.0`。传死 `'0.0.0.0'` 会只剩 IPv4，v6 侧一个字节都进不来。
+    if (config.host) server.listen(config.port, config.host, resolve)
+    else server.listen(config.port, resolve)
   })
 
-  log('info', `共享库已启动：http://${config.host}:${config.port}（schema v${SCHEMA_VERSION}）`)
+  const addr = server.address()
+  log('info', `共享库已启动：http://${addr.address}:${addr.port}（${addr.family}）`)
   log('info', `数据库：${config.dbPath}`)
 
   const shutdown = signal => {

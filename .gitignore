@@ -1,8 +1,9 @@
 node_modules/*
 config/config/*
 data/*
-# 共享库服务端的数据库。里面虽然只有 QQ 的加盐哈希，但那是别人的个人信息，
-# 一次 git add -A 就会把它提交进公开仓库，所以从仓库层面堵住
+# 共享库服务端的数据库和密钥。db 里虽然只有 QQ 的加盐哈希、.env 里是两把真密钥，
+# 但都是不该进公开仓库的东西，从仓库层面堵住
 server/data/*
+server/.env
 *.css.map
 .DS_Store
