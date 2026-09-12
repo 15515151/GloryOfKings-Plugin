@@ -110,6 +110,8 @@ const helpSections = [
     theme: 'orange',
     icon: '主人',
     master: true,
+    // 只在主人私聊里渲染 —— 群聊里贴出去等于把这些指令广播给全群
+    ownerOnly: true,
     list: [
       { cmd: '#王者设置', desc: '打开插件设置面板' },
       { cmd: '#王者用户统计', desc: '查看插件用户使用统计' },
@@ -134,6 +136,8 @@ const helpSections = [
     desc: '插件维护与更新',
     theme: 'green',
     icon: '系统',
+    // 同上：维护类指令不给普通用户看
+    ownerOnly: true,
     list: [
       { cmd: '#王者帮助', alias: ['#王者help'], desc: '显示本帮助面板' },
       { cmd: '#王者更新', alias: ['#王者强制更新'], desc: '更新插件到最新版本' },
@@ -166,7 +170,12 @@ export class Help extends plugin {
 
   async showHelp(e) {
     const keyword = (e.msg.match(/^#?王者(?:荣耀|农药)?(?:插件|plugin)?(?:帮助|help)\s*(.*)$/i)?.[1] || '').trim()
-    const sections = keyword ? filterSections(helpSections, keyword) : helpSections
+    let sections = keyword ? filterSections(helpSections, keyword) : helpSections
+
+    // 「主人指令」「系统指令」只在主人私聊里出现。群聊里贴出去等于把主人专属指令的
+    // 名字和用法广播给全群；普通用户更不需要看这些。过滤放在关键词筛选之后，
+    // 非主人拿这些词去搜也只会得到「没找到」（不暴露它们存在）。
+    if (!(e.isMaster && !e.isGroup)) sections = sections.filter(section => !section.ownerOnly)
 
     if (!sections.length) {
       return e.reply(
