@@ -30,38 +30,79 @@ const QR_WAIT_TIMEOUT_MS = 60 * 1000
 const SCAN_TIMEOUT_MS = 3 * 60 * 1000
 
 /**
- * 取渲染器实例。
- * 优先用宿主给的 `e.runtime.puppeteer` —— 这样在「外置渲染」（渲染器配了 puppeteerWS，
- * 连的是远程 chromium）或换了别的渲染后端的机器人上同样能用；
- * 直接 import 渲染器文件是兜底，只适合没传 e 的脱机场景。
+ * 取宿主渲染器。
+ * ⚠️ 必须返回 null 而不是空对象 —— `lib/renderer/loader.js` 的 getRenderer() 在
+ * 「配置的渲染后端不是 puppeteer」时返回 `{}`，直接拿它会在 browserInit 上炸成
+ * 「renderer.browserInit is not a function」。这种环境下得走自己 launch 的兜底。
  */
 function resolveRenderer(e) {
-  const fromRuntime = e?.runtime?.puppeteer
-  if (fromRuntime?.browserInit) {
-    return fromRuntime
+  for (const candidate of [e?.runtime?.puppeteer, puppeteer]) {
+    if (candidate && typeof candidate.browserInit === 'function') {
+      return candidate
+    }
   }
-  return puppeteer
+  return null
+}
+
+/**
+ * 兜底：自己起一个浏览器。
+ * 宿主的渲染后端不是 puppeteer 时（换成外置/别的渲染器），借不到实例，只能自己来。
+ * 这样拿到的实例归本流程所有，用完必须 close，别留给下次（会变孤儿进程）。
+ */
+export async function launchOwnBrowser() {
+  let puppeteerPkg = null
+  try {
+    puppeteerPkg = (await import('puppeteer')).default
+  } catch (error) {
+    logger.error(`[营地QQ登录] 未能加载 puppeteer 包: ${error.message}`)
+    return null
+  }
+
+  const browser = await puppeteerPkg.launch({
+    headless: 'new',
+    args: [
+      '--disable-gpu',
+      '--disable-setuid-sandbox',
+      '--no-sandbox',
+      '--no-zygote',
+      '--disable-dev-shm-usage'
+    ],
+    timeout: 60 * 1000
+  }).catch(error => {
+    logger.error(`[营地QQ登录] 浏览器启动失败: ${error.message}`)
+    return null
+  })
+
+  if (browser) {
+    logger.info('[营地QQ登录] 宿主渲染后端不是 puppeteer，已自行启动浏览器')
+  }
+  return browser
 }
 
 /**
  * 拿浏览器实例。
- * browserInit() 在并发时（别的指令正在出图）会直接返回 false，所以这里要重试几次，
- * 不然用户会莫名其妙看到「生成二维码失败」。
+ * @returns {Promise<{browser, owned}|null>} owned=true 表示是自己起的，close 时要负责关掉
  */
 async function acquireBrowser(renderer, { retries = 4, intervalMs = 700 } = {}) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const browser = await renderer.browserInit().catch(error => {
-      logger.error(`[营地QQ登录] 浏览器初始化失败: ${error.message}`)
-      return null
-    })
-    if (browser) {
-      return browser
+  if (renderer) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const browser = await renderer.browserInit().catch(error => {
+        logger.error(`[营地QQ登录] 浏览器初始化失败: ${error.message}`)
+        return null
+      })
+      if (browser) {
+        return { browser, owned: false }
+      }
+      if (attempt < retries) {
+        // browserInit() 在并发（别人正在出图）时会直接返回 false，等一下再试
+        await sleep(intervalMs)
+      }
     }
-    if (attempt < retries) {
-      await sleep(intervalMs)
-    }
+    logger.warn('[营地QQ登录] 宿主浏览器多次获取失败，改为自己启动')
   }
-  return null
+
+  const browser = await launchOwnBrowser()
+  return browser ? { browser, owned: true } : null
 }
 
 function sleep(ms) {
@@ -189,10 +230,11 @@ async function loginCampByOpenSdk(tokens) {
  */
 export async function createQQLoginSession(e) {
   const renderer = resolveRenderer(e)
-  const browser = await acquireBrowser(renderer)
-  if (!browser) {
+  const acquired = await acquireBrowser(renderer)
+  if (!acquired) {
     throw new Error('浏览器不可用，无法发起 QQ 扫码登录')
   }
+  const { browser, owned: ownBrowser } = acquired
 
   const page = await browser.newPage()
   let closed = false
@@ -211,6 +253,14 @@ export async function createQQLoginSession(e) {
       await page.close()
     } catch (error) {
       logger.debug(`[营地QQ登录] 关闭页面失败: ${error.message}`)
+    }
+    if (ownBrowser) {
+      // 自己起的浏览器必须关掉，否则会变成常驻孤儿进程
+      try {
+        await browser.close()
+      } catch (error) {
+        logger.warn(`[营地QQ登录] 关闭自启浏览器失败: ${error.message}`)
+      }
     }
   }
 
@@ -232,7 +282,7 @@ export async function createQQLoginSession(e) {
       }
     })
 
-    logger.info(`[营地QQ登录] 使用渲染器发起登录（${renderer === puppeteer ? '本地' : '宿主 runtime'}）`)
+    logger.info(`[营地QQ登录] 发起登录（${renderer ? '借宿主浏览器' : '自备浏览器'}）`)
     try {
       await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS })
     } catch (error) {
