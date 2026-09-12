@@ -1,5 +1,5 @@
 import path from 'path'
-import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache } from '#utils'
+import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache, querySharedBind } from '#utils'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { Config, PluginData, PluginPath } from '#components'
 import authStore from '../utils/authStore.js'
@@ -434,6 +434,27 @@ export class AccountManager extends plugin {
     const { userData } = this.getUserData(userId)
 
     if (!userData[userId]?.ids.length) {
+      // 本机没绑过 —— 但共享库里可能有他（在别的机器人上绑过）。
+      // 早先这里直接回一张「怎么获取营地ID」的教程图，用户一看就像在说
+      // 「你还没绑定」，可他库里明明有。所以先问一次库。
+      const shared = await querySharedBind(userId)
+      if (shared.found && shared.campIds?.length) {
+        const list = {
+          ids: shared.campIds,
+          current: Math.max(0, shared.campIds.indexOf(shared.current))
+        }
+        const nameMap = await fetchRoleNames(shared.campIds, userId)
+        const idList = this.formatIdList(list, nameMap)
+        const currentId = shared.campIds[list.current] || shared.campIds[0]
+        const html = await this.generateAccountManageHTML('查询', currentId, idList, nameMap[currentId])
+
+        return e.reply([
+          '下面这些是从共享库拿到的（你在别的机器人上绑过）；本机还没绑，要用推送之类的功能得在本机绑一次',
+          html,
+          Button.bind()
+        ], shouldQuote())
+      }
+
       return e.reply([
         segment.image(path.join(PluginPath, 'resources', 'img', '营地ID获取.png')),
         Button.bind()
