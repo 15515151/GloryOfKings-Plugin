@@ -302,6 +302,14 @@ export class AccountManager extends plugin {
 
   // 绑定ID
   async bindWzryId(e) {
+    // 只在群里绑：这张绑定表（UserData.yaml）只存 QQ ↔ 营地ID，本身不带群信息，
+    // 而绑定之后的用途（群推送、#谁在打游戏 名单）全是按群来的 —— 私聊里绑出来
+    // 的绑定没有能用的地方，拦掉免得用户绑完不知道去哪儿开。
+    if (!e.isGroup) {
+      await e.reply(['绑定营地需要在群里进行，请到群里发送 #绑定营地 [营地ID]', Button.bind()])
+      return
+    }
+
     let userId = await this.getReplyUserId(e)
     if (!userId) return
     // 指令与ID之间允许有空格：#绑定营地123 与 #绑定营地 123 等价
