@@ -1,8 +1,8 @@
 node_modules/*
 config/config/*
 data/*
-# 共享库服务端的数据库和密钥。db 里虽然只有 QQ 的加盐哈希、.env 里是两把真密钥，
-# 但都是不该进公开仓库的东西，从仓库层面堵住
+# 老布局残留：服务端曾住在插件 server/ 下，分离到 server 分支后那边的代码会被 git 清掉，
+# 但 .env 和 data/ 是 gitignore 的、会留在用户机器上 —— 继续挡住，别混进提交
 server/data/*
 server/.env
 *.css.map

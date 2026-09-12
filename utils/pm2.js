@@ -150,20 +150,23 @@ export function pm2Proc (name) {
  * 判断某个 pm2 进程是不是**我们自己起的那个**。
  *
  * 光比名字不够：别人完全可能也有个叫同名进程的东西，而卸载动作会把它停掉、删掉。
- * 所以要看它跑的是不是我们这个 server 目录下的入口，cwd 和脚本路径任一命中才算。
+ * 所以要看它跑的是不是我们 server 目录下的入口，cwd 和脚本路径任一命中才算。
  * （这个教训是从 meme 插件的卸载逻辑里带过来的。）
  *
+ * 服务端分离到独立目录后有两个合法位置：现在的 `<云崽根>/gok-share-server/`
+ * 和老版本的插件 `server/`，传数组两个都认（单数照样收）。
+ *
  * @param {object|null} proc pm2Proc 的返回值
- * @param {string} serverDir 本插件的 server 目录绝对路径
+ * @param {string|string[]} serverDir 服务端目录绝对路径，新旧位置可以一起传
  */
 export function isOurProcess (proc, serverDir) {
   if (!proc) return false
 
   const norm = p => String(p || '').replace(/\\/g, '/').toLowerCase()
-  const want = norm(serverDir)
+  const wants = (Array.isArray(serverDir) ? serverDir : [serverDir]).map(norm)
 
   const cwd = norm(proc.pm2_env?.pm_cwd || proc.pm2_env?.cwd)
   const script = norm(proc.pm2_env?.pm_exec_path)
 
-  return cwd.startsWith(want) || script.startsWith(want)
+  return wants.some(want => cwd.startsWith(want) || script.startsWith(want))
 }
