@@ -7,8 +7,8 @@
  * ## 服务端代码从哪来
  *
  * 服务端已经分离到仓库的 `server` 分支，插件目录里不再自带。部署时从 origin 把
- * 那个分支浅克隆到 `<云崽根>/gok-share-server/`，再用 pm2 拉起 —— 服务端连同它的
- * 密钥、数据库都住在插件目录**外面**，更新、重装插件都不会碰它们。
+ * 那个分支浅克隆到 `<云崽根>/data/gok-share-server/`，再用 pm2 拉起 —— 服务端连同
+ * 它的密钥、数据库都住在插件目录**外面**，更新、重装插件都不会碰它们。
  *
  * ## 为什么是 QQ 指令而不是命令行脚本
  *
@@ -21,9 +21,9 @@
  * 1. **令牌只在私聊里出现**。群里执行的话结果一律走私聊，群里只回一句「已私聊」。
  * 2. **卸载只认自己起的那个进程**：cwd 或入口脚本必须落在 server 目录下。
  *    光比进程名会把别人的东西停掉（这条教训是从 meme 的卸载逻辑带过来的）。
- * 3. **盐要复用，卸载也不能删**。换了盐，数据库里所有 QQ 的哈希当场变成无意义的
- *    字符串 —— 查询永远 404，等于所有人的共享记录一起作废。所以密钥必须跟数据
- *    同生共死：留数据就得留盐，删盐就要连数据一起删，不能只删一半。
+ * 3. **盐和密钥同生共死**。换了盐，数据库里所有 QQ 的哈希当场变成无意义的字符串 ——
+ *    查询永远 404，等于所有人的共享记录一起作废。所以重新部署时盐是复用不是重造；
+ *    卸载确认则把密钥连数据一起删，绝不只删一半（只留锁不留钥匙是错的）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -41,9 +41,9 @@ import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.
 import { sendMaster } from '../utils/masterMsg.js'
 import { sendPrivate } from '../utils/privateMsg.js'
 
-/** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）。服务端安家在这里，不跟插件走 */
+/** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）。服务端安家在云崽的 data/ 里，不跟插件走 */
 const YunzaiRoot = path.resolve(PluginPath, '../..')
-const SERVER_DIR = path.join(YunzaiRoot, 'gok-share-server')
+const SERVER_DIR = path.join(YunzaiRoot, 'data', 'gok-share-server')
 const SERVER_BRANCH = 'server'
 
 const ENV_FILE = path.join(SERVER_DIR, '.env')
@@ -534,12 +534,13 @@ export class ShareDeploy extends plugin {
 
     if (!confirmed) {
       return e.reply([
-        '要卸载营地ID共享库吗？这一步只停服务，密钥和数据都留着：',
+        '要卸载营地ID共享库吗？确认后是**全部删除**：',
         '',
-        `· 密钥：${path.relative(YunzaiRoot, ENV_FILE)}`,
-        `· 数据：${path.relative(YunzaiRoot, DB_FILE)}`,
+        '· pm2 进程',
+        `· 整个 ${path.relative(YunzaiRoot, SERVER_DIR)}/ 目录（代码、密钥、数据库一起删）`,
         '',
-        '重新部署能接着用。想彻底清干净就把上面两个自己删掉。',
+        '库里是 QQ 的加盐哈希，密钥必须和数据库同生共死 —— 要删就一起删，',
+        '没有「只停服务、留着数据」的中间态。想留数据就先把整个目录备份走。',
         '',
         '确认就发：#营地共享库卸载确认'
       ].join('\n'), shouldQuote())
@@ -570,22 +571,26 @@ export class ShareDeploy extends plugin {
       done.push('没有在跑的进程')
     }
 
+    // 进程停稳了再删目录。密钥和数据在这里一起走 —— 见文件头第 3 条规矩
+    if (fs.existsSync(SERVER_DIR)) {
+      try {
+        fs.rmSync(SERVER_DIR, { recursive: true, force: true })
+        done.push(`已删除 ${path.relative(YunzaiRoot, SERVER_DIR)}/`)
+      } catch (error) {
+        failed.push(
+          `删除 ${path.relative(YunzaiRoot, SERVER_DIR)}/ 失败（${error?.message || error}）。` +
+          '多半是文件还被占着，稍等一下手动删掉即可'
+        )
+      }
+    } else {
+      done.push('服务端目录本来就不存在')
+    }
+
     resetPm2Cache()
-    logger.mark(`[${PluginName}] 营地ID共享库已卸载（密钥和数据保留）`)
+    logger.mark(`[${PluginName}] 营地ID共享库已卸载（${done.join('、')}）`)
 
     const lines = [`卸载完成：${done.join('、')}`]
     if (failed.length) lines.push('', '但有几步没成：', ...failed.map(t => `· ${t}`))
-
-    // 密钥**故意删掉**是错的：库里是 QQ 的加盐哈希，换盐等于让所有记录作废，
-    // 而数据库是保留的 —— 只留锁不留钥匙。两者要么一起留，要么一起删。
-    lines.push(
-      '',
-      '密钥和数据都留着，重新部署能接着用：',
-      `· ${path.relative(YunzaiRoot, ENV_FILE)}`,
-      fs.existsSync(DB_FILE) ? `· ${path.relative(YunzaiRoot, DB_FILE)}` : '· （还没有数据库文件）',
-      '',
-      '彻底不想要了就把这两个删掉，别只删其中一个。'
-    )
 
     return e.reply(lines.join('\n'), shouldQuote())
   }
