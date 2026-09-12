@@ -63,6 +63,40 @@ export function supportGuoba () {
           component: 'Switch'
         },
         {
+          field: 'config.shareEnabled',
+          label: '营地ID共享库',
+          bottomHelpMessage:
+            '接入一个自建的「QQ → 营地ID」共享池，让用户在别的机器人上绑过的营地ID 在本机也能直接用，不用重新绑定。' +
+            '共享库要自己搭（代码和部署说明在插件目录 server/ 下），或者用别人搭好的。' +
+            '默认关闭：不接入时本插件所有功能都不受影响。' +
+            '用户默认**不共享**，要他们自己发 #开启营地ID共享 才会把自己的营地ID传上去。' +
+            '只有当场发的查询指令认共享数据，推送/排行榜/#谁在打游戏 仍只认本机绑定。' +
+            '本机还需要有一个可用的全局账号，共享来的营地ID 才查得动（#营地wx全局登录）。',
+          component: 'Switch'
+        },
+        {
+          field: 'config.shareApiUrl',
+          label: '共享库地址',
+          bottomHelpMessage:
+            '共享库服务端的地址，要带 http:// 或 https://。留空 = 不接入。' +
+            '等价指令：#营地共享库地址 <地址>。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'https://your-share.example.com'
+          }
+        },
+        {
+          field: 'config.shareToken',
+          label: '共享库令牌',
+          bottomHelpMessage:
+            '共享库主人签发的令牌，一个机器人一个。注意这是凭证，等同密码，' +
+            '别往群里贴、也别把带它的配置截图发出去。等价指令：#营地共享库令牌 <令牌>。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'gok_1_xxxxxxxx'
+          }
+        },
+        {
           field: 'config.battleResultCron',
           label: '推送检查间隔',
           bottomHelpMessage: '战绩推送、开局提醒、上下线提醒共用这一个轮询，这里定的是「最快多久看一次」。每个订阅串行拉接口（间隔 800 毫秒）；真打完一局时会再拉一次详情并渲染图（约 1.3 秒）。玩家离线时实际间隔会按下面的退避倍数自动拉长，不会一直按这个频率打接口。设太短仍会触发营地频控 -30107，不建议低于 2 分钟。',

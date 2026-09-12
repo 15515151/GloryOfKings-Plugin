@@ -33,7 +33,7 @@ import {
 import { loadPushList, savePushList, mergeSubState, disableSubFlag, subGroups, withSubGroup, withoutSubGroup, sleep, REQUEST_INTERVAL } from '../utils/pushStore.js'
 import { fetchRoleNames } from '../utils/roleName.js'
 import {
-  getCurrentId, getUserAvatar, Button, shouldQuote, readYamlFile, parsePerfArgs,
+  resolveCurrentId, getUserAvatar, Button, shouldQuote, readYamlFile, parsePerfArgs,
   AT_HEAD, stripAtText, resolveTargetUserId, pickGroupSafe, isBlackUser
 } from '#utils'
 import { Config, PluginData } from '#components'
@@ -126,10 +126,14 @@ export class BattleReport extends plugin {
       }
     }
 
-    if (!campId) campId = getCurrentId(userId)
-
+    // 本机没绑就问共享库（用户在别的机器人上绑过也能直接用）。
+    // 上面的序号路径不走共享——序号指的是「本机绑定的第 N 个」
     if (!campId) {
-      return e.reply(['你还没有绑定营地ID，先发送 #绑定营地 [营地ID]', Button.bind()], shouldQuote())
+      const resolved = await resolveCurrentId(userId)
+      campId = resolved.campId
+      if (!campId) {
+        return e.reply([resolved.hint, Button.bind()], shouldQuote())
+      }
     }
 
     // 月报第一次查很可能要翻十几页（约 20 秒），先给个回执，不然用户以为指令没响应

@@ -32,8 +32,12 @@ const MAX_FILE_BYTES = 32 * 1024 * 1024
 /** 备份范围：用户数据 + 用户改过的配置。default_config 是随仓库发的，不用备 */
 const TARGETS = ['data', 'config/config']
 
-/** imgCache 是可再生的图片缓存（上限 200MB），backup 是备份自己，都不进包 */
-const SKIP_DIRS = new Set(['imgCache', 'backup'])
+/**
+ * imgCache 是可再生的图片缓存（上限 200MB），backup 是备份自己，都不进包。
+ * share 里放着共享库的令牌和别人营地ID 的查询缓存——这个 zip 是会被私聊发出去的，
+ * 令牌不该跟着走（要恢复共享库配置，重新填一次地址和令牌就行）。
+ */
+const SKIP_DIRS = new Set(['imgCache', 'backup', 'share'])
 
 const CRC_TABLE = (() => {
   const table = new Int32Array(256)

@@ -6,7 +6,7 @@ import {
   getPvpSkinCover,
   getPvpHeroSkins,
   getCampHeroSkins,
-  getCurrentId,
+  resolveCurrentId,
   Button,
   shouldQuote
 } from '#utils'
@@ -120,7 +120,8 @@ export class HeroSkin extends plugin {
         const heroSkinNames = hero?.skin_name ? hero.skin_name.split('|') : []
         let campId = ''
         try {
-            campId = getCurrentId(e.user_id) || ''
+            // 本机没绑就问共享库。搭营地那两块本来就是增强项，取不到不影响出图
+            campId = (await resolveCurrentId(e.user_id)).campId || ''
         } catch {}
 
         const campSkins = await getCampHeroSkins(hero?.cname || fullName, { campId, botUserId: e.user_id })

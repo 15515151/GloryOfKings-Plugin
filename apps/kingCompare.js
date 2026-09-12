@@ -17,7 +17,7 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import path from 'path'
 import {
-  ApiService, getCurrentId, readYamlFile, Button, shouldQuote,
+  ApiService, resolveCurrentId, readYamlFile, Button, shouldQuote,
   AT_HEAD, stripAtText, pickAtText, resolveMemberName
 } from '#utils'
 import { summarizeProfile, rankText, compareRank } from '../utils/profileSummary.js'
@@ -127,8 +127,9 @@ export class KingCompare extends plugin {
     const myIds = mine[self]?.ids || []
     const byIndex = idx => myIds[idx - 1] || ''
 
-    // 左边默认是自己（当前号），除非用序号/营地ID显式指定了两个对手
-    let left = campIds[0] || byIndex(indexes[0]) || getCurrentId(self)
+    // 左边默认是自己（当前号），除非用序号/营地ID显式指定了两个对手。
+    // resolveCurrentId 本机没绑时会去问共享库，同一轮里第二次调用命中缓存、不会再发请求
+    let left = campIds[0] || byIndex(indexes[0]) || (await resolveCurrentId(self)).campId
     let right = campIds[1] || byIndex(indexes[1]) || ''
     let leftOwner = self
     let rightOwner = self
@@ -136,7 +137,7 @@ export class KingCompare extends plugin {
     // 只给了一个参数时，那个参数是「对手」，自己当左边
     if ((campIds.length + indexes.length) === 1) {
       right = campIds[0] || byIndex(indexes[0])
-      left = getCurrentId(self)
+      left = (await resolveCurrentId(self)).campId
     }
 
     // @ 了人就拿对方自己绑的号，比参数优先级低（显式给ID时以ID为准）
@@ -144,7 +145,7 @@ export class KingCompare extends plugin {
       const atUser = await this.pickOther(e)
       if (atUser.hint) return e.reply(atUser.hint, shouldQuote())
       if (atUser.userId) {
-        right = getCurrentId(atUser.userId)
+        right = (await resolveCurrentId(atUser.userId)).campId
         rightOwner = atUser.userId
         if (!right) {
           const who = await this.nameOf(e, atUser.userId)

@@ -13,7 +13,7 @@ import { buildBattleCsv, archiveRange, writeExportFile } from '../utils/battleEx
 import { getHeroNameMap } from '../utils/reportStore.js'
 import { ARCHIVE_KEEP_DAYS } from '../utils/battleArchive.js'
 import {
-  getCurrentId, Button, shouldQuote, parsePerfArgs,
+  resolveCurrentId, Button, shouldQuote, parsePerfArgs,
   AT_HEAD, stripAtText, resolveTargetUserId
 } from '#utils'
 import { PluginData } from '#components'
@@ -85,9 +85,13 @@ export class BattleExport extends plugin {
     let campId = args.campId
     const days = args.all ? 0 : Math.min(args.count || 0, ARCHIVE_KEEP_DAYS)
 
-    if (!campId) campId = getCurrentId(userId)
+    // 本机没绑就问共享库（用户在别的机器人上绑过也能直接用）
     if (!campId) {
-      return e.reply(['你还没有绑定营地ID，先发送 #绑定营地 [营地ID]', Button.bind()], shouldQuote())
+      const resolved = await resolveCurrentId(userId)
+      campId = resolved.campId
+      if (!campId) {
+        return e.reply([resolved.hint, Button.bind()], shouldQuote())
+      }
     }
 
     const range = archiveRange(campId)

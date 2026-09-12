@@ -19,7 +19,7 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import path from 'path'
 import {
-  getCurrentId, readYamlFile, Button, shouldQuote, getUserAvatar,
+  resolveCurrentId, readYamlFile, Button, shouldQuote, getUserAvatar,
   AT_HEAD, stripAtText, resolveTargetUserId, resolveMemberName
 } from '#utils'
 import { loadArchive, collectBattles, ARCHIVE_KEEP_DAYS } from '../utils/battleArchive.js'
@@ -56,10 +56,13 @@ export class ScoreTrend extends plugin {
       campId = ids[args.index - 1] || ''
       if (!campId) return e.reply(`你没有第 ${args.index} 个绑定的营地ID，发送 #营地ID 看看列表`, shouldQuote())
     }
-    if (!campId) campId = getCurrentId(userId)
-
+    // 本机没绑就问共享库（用户在别的机器人上绑过也能直接用）
     if (!campId) {
-      return e.reply(['你还没有绑定营地ID，先发送 #绑定营地 [营地ID]', Button.bind()], shouldQuote())
+      const resolved = await resolveCurrentId(userId)
+      campId = resolved.campId
+      if (!campId) {
+        return e.reply([resolved.hint, Button.bind()], shouldQuote())
+      }
     }
 
     const days = Math.min(Math.max(args.days || TREND_DEFAULT_DAYS, 1), ARCHIVE_KEEP_DAYS)

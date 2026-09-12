@@ -117,6 +117,9 @@ export class GameRecordPush extends plugin {
       return ''
     }
 
+    // 订阅入口刻意**不**去问营地ID共享库：这里解析出来的 campId 会被写进
+    // GameRecordPush.yaml 固化成本地订阅的一部分，共享库那边后来改了值它也跟不上。
+    // 共享只服务「当场发的查询指令」，详见 utils/shareStore.js 顶部
     const campId = getCurrentId(e.user_id)
     if (!campId) {
       await e.reply(['你还没有绑定营地ID，先发送 #绑定营地 [营地ID]', Button.bind()], shouldQuote())
@@ -371,6 +374,7 @@ export class GameRecordPush extends plugin {
     }
 
     // 绑了营地号就够 —— 采集只需要营地ID，不需要在群里发（影子订阅一个群都不推）
+    // 同 :120，订阅入口不去问共享库（值会被固化进订阅文件）
     const campId = getCurrentId(qq)
     if (!campId) {
       await e.reply(['你还没有绑定营地ID，先发送 #绑定营地 [营地ID]', Button.bind()], shouldQuote())
@@ -483,6 +487,12 @@ export class GameRecordPush extends plugin {
     // 再干等 800ms，订阅多了就是纯浪费。
     // 被拉黑的人整条跳过（订阅不删，移出黑名单就自动恢复）——推送是插件主动发的，
     // 不经过指令那条闸门，得在这里挡
+    //
+    // ⚠️ 从这一行到下面第 570 行那个 `savePushList(list)` 是一整块**同步**的
+    // read-modify-write：中间一个 await 都没有，对事件循环而言是原子的，所以
+    // 两次重叠的 checkAll 不会互相覆盖写盘。**不要往这段里加任何 await**
+    // （包括把 getCurrentId 换成共享库那个异步版）——一旦让出 microtask，
+    // 而重入保护（下面的 `running`）又在这段之后才生效，整表覆盖丢写就成现实了。
     const list = loadPushList()
     const entries = Object.entries(list)
       .filter(([qq, sub]) => !isBlackUser(qq) &&

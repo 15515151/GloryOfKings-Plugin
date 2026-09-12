@@ -7,7 +7,7 @@
  *     拿不到就自动跳过这两块，不影响出图。
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { Button, shouldQuote, getCurrentId } from '#utils'
+import { Button, shouldQuote, resolveCurrentId } from '#utils'
 import { getHeroGuide, getCampBuild } from '../utils/heroGuide.js'
 
 export class HeroGuide extends plugin {
@@ -62,8 +62,10 @@ export class HeroGuide extends plugin {
       return
     }
 
-    // 营地那两块是增强项：有登录态就带上核心装备与铭文，拿不到就照旧只用官网数据
-    const camp = await getCampBuild(hero.ename, getCurrentId(e.user_id) || '', String(e.user_id))
+    // 营地那两块是增强项：有登录态就带上核心装备与铭文，拿不到就照旧只用官网数据。
+    // 本机没绑的话顺带问一句共享库
+    const { campId: boundCampId } = await resolveCurrentId(e.user_id)
+    const camp = await getCampBuild(hero.ename, boundCampId || '', String(e.user_id))
 
     const img = await puppeteer.screenshot('HeroGuide', {
       imgType: 'webp',

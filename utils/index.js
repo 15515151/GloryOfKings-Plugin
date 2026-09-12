@@ -38,8 +38,7 @@ import {
   followGlobalBlack,
   getHostBlackList
 } from './blackList.js'
-import path from 'path'
-import { PluginData, Config } from '#components'
+import { Config } from '#components'
 
 export {
   ApiService,
@@ -106,16 +105,34 @@ export function shouldQuote () {
   }
 }
 
-export function getCurrentId (userId) {
-  const filePath = path.join(PluginData, 'UserData.yaml')
-  const userData = readYamlFile(filePath)
+/**
+ * 本地绑定表的读取在这里，实现在 utils/localBind.js。
+ * 单独一个文件是为了避开和共享库（utils/shareStore.js）之间的循环依赖——
+ * 共享库要靠「本地优先」判断该不该去查，这边又要转出共享库的接口。
+ */
+export { getCurrentId, getBoundIds, readUserData } from './localBind.js'
 
-  if (!userData[userId] || !userData[userId].ids.length) {
-    return null
-  }
-
-  return userData[userId].ids[userData[userId].current]
-}
+/**
+ * 营地ID 共享库客户端。
+ *
+ * ⚠️ `resolveCurrentId` 是**异步**的，只该用在「用户当场发的查询指令」里。
+ * 推送、排行榜、`#谁在打游戏`、日报周报一律继续用同步的 getCurrentId——
+ * 那些路径要么在同步的 read-modify-write 块里，要么会把营地ID 固化进订阅文件。
+ * 详细理由见 utils/shareStore.js 顶部注释。
+ */
+export {
+  resolveCurrentId,
+  invalidateShareCache,
+  isShareReady,
+  readShareConfig,
+  getShareStatus,
+  getCacheInfo,
+  pushBind,
+  revokeBind,
+  probeShare,
+  NOT_BOUND_HINT,
+  SHARE_DEGRADED_HINT
+} from './shareStore.js'
 
 /**
  * 解析「表现」类指令后面跟的参数，营地ID / 赛季号 / 数量 / all 混着写也能认出来。

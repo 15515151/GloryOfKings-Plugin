@@ -1,8 +1,9 @@
 import path from 'path'
-import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote } from '#utils'
+import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache } from '#utils'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { Config, PluginData, PluginPath } from '#components'
 import authStore from '../utils/authStore.js'
+import { syncUserBind } from '../utils/shareUsers.js'
 import { fetchRoleNames } from '../utils/roleName.js'
 import {
   createWechatLoginSession,
@@ -128,6 +129,20 @@ export class AccountManager extends plugin {
   // 保存用户数据
   saveUserData(filePath, userData) {
     writeYamlFile(filePath, userData)
+  }
+
+  /**
+   * 本地绑定变动后和共享库对一次账。
+   *
+   * 两件事：
+   *  - 清掉这个 QQ 的共享缓存。本地值本来就会压住缓存值，但**删除/切换时必须清**——
+   *    否则那份从共享库拿来的旧值会在本地已经没有之后继续被解析出来
+   *  - 开了共享的人顺带把新绑定传上去。**故意不 await**：共享库是别人搭的外部依赖，
+   *    它慢或者挂了都不该拖住「绑定成功」这个动作
+   */
+  syncShareAfterBind(userId) {
+    invalidateShareCache(userId)
+    syncUserBind(userId).catch(() => {})
   }
 
   // 新增公共方法处理HTML生成
@@ -345,6 +360,7 @@ export class AccountManager extends plugin {
     }
 
     authStore.bindCampUserId(userId, wzryId)
+    this.syncShareAfterBind(userId)
     await this.replyBindResultCard(e, userId, wzryId)
   }
 
@@ -367,6 +383,7 @@ export class AccountManager extends plugin {
 
     userData[userId].current = index
     this.saveUserData(filePath, userData)
+    this.syncShareAfterBind(userId)
 
     const currentId = userData[userId].ids[index]
     const nameMap = await fetchRoleNames(userData[userId].ids, userId)
@@ -401,6 +418,7 @@ export class AccountManager extends plugin {
     }
 
     this.saveUserData(filePath, userData)
+    this.syncShareAfterBind(userId)
 
     // 被删的 ID 已经不在列表里了，单独带上一起查，卡片顶部才认得出删的是谁
     const nameMap = await fetchRoleNames([deletedId, ...userData[userId].ids], userId)
