@@ -10,10 +10,6 @@
  * 那个分支浅克隆到 `<云崽根>/gok-share-server/`，再用 pm2 拉起 —— 服务端连同它的
  * 密钥、数据库都住在插件目录**外面**，更新、重装插件都不会碰它们。
  *
- * 老版本把服务端放在插件 `server/` 下：更新插件后代码会被 git 拿走，但 `.env` 和
- * `data/` 是 gitignore 的、会留在原地。部署指令检测到这种残留（或还在跑的老进程）
- * 会把密钥和数据一起搬去新位置，原来的记录接着用。
- *
  * ## 为什么是 QQ 指令而不是命令行脚本
  *
  * 插件本来就跑在云崽里，而部署要做的每件事（拉代码、生成密钥、写文件、起进程、
@@ -23,7 +19,7 @@
  * ## 三条硬规矩
  *
  * 1. **令牌只在私聊里出现**。群里执行的话结果一律走私聊，群里只回一句「已私聊」。
- * 2. **卸载只认自己起的那个进程**：cwd 或入口脚本必须落在新旧两个 server 目录之一。
+ * 2. **卸载只认自己起的那个进程**：cwd 或入口脚本必须落在 server 目录下。
  *    光比进程名会把别人的东西停掉（这条教训是从 meme 的卸载逻辑带过来的）。
  * 3. **盐要复用，卸载也不能删**。换了盐，数据库里所有 QQ 的哈希当场变成无意义的
  *    字符串 —— 查询永远 404，等于所有人的共享记录一起作废。所以密钥必须跟数据
@@ -50,17 +46,9 @@ const YunzaiRoot = path.resolve(PluginPath, '../..')
 const SERVER_DIR = path.join(YunzaiRoot, 'gok-share-server')
 const SERVER_BRANCH = 'server'
 
-/** 老布局：服务端原先住在插件 `server/` 里，残留的 .env 和 data/ 要靠部署指令搬走 */
-const LEGACY_SERVER_DIR = path.join(PluginPath, 'server')
-const LEGACY_ENV_FILE = path.join(LEGACY_SERVER_DIR, '.env')
-const LEGACY_DB_FILE = path.join(LEGACY_SERVER_DIR, 'data', 'share.db')
-
 const ENV_FILE = path.join(SERVER_DIR, '.env')
 const ENTRY_FILE = path.join(SERVER_DIR, 'bin', 'start.mjs')
 const DB_FILE = path.join(SERVER_DIR, 'data', 'share.db')
-
-/** 这个名字的进程只要跑在新旧任一位置，就认定是我们自己起的 */
-const OUR_DIRS = [SERVER_DIR, LEGACY_SERVER_DIR]
 
 const PROC_NAME = 'gok-share'
 const DEFAULT_PORT = 8787
@@ -69,10 +57,10 @@ const MIN_NODE_MAJOR = 24
 
 /* ------------------------------------------------------------ 小工具 */
 
-function parseEnvFile (file) {
+function readEnvFile () {
   try {
     const out = {}
-    for (const rawLine of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    for (const rawLine of fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)) {
       const line = rawLine.trim()
       if (!line || line.startsWith('#')) continue
 
@@ -82,13 +70,8 @@ function parseEnvFile (file) {
     }
     return out
   } catch {
-    return null
+    return {}
   }
-}
-
-/** 新位置的 .env 优先；老布局留下的也认（服务端可能还在那边跑着） */
-function readEnvFile () {
-  return parseEnvFile(ENV_FILE) || parseEnvFile(LEGACY_ENV_FILE) || {}
 }
 
 function writeEnvFile (values) {
@@ -253,55 +236,6 @@ function fetchServerCode (url) {
   return git(['clone', '--depth', '1', '--branch', SERVER_BRANCH, url, SERVER_DIR], { timeout: 300000 })
 }
 
-/**
- * 老布局迁移：把插件 `server/` 里留下的 .env 和 data/ 搬到新位置。
- * 必须在老进程停掉**之后**搬 —— db 是 WAL 模式，热拷贝可能拿不到最新数据。
- * 只做「新位置没有才拷」：两边都有时以新位置为准，重新部署不该把数据搬回去。
- */
-function migrateLegacyFiles () {
-  const moved = []
-
-  if (fs.existsSync(LEGACY_ENV_FILE) && !fs.existsSync(ENV_FILE)) {
-    fs.cpSync(LEGACY_ENV_FILE, ENV_FILE)
-    moved.push('密钥 .env')
-  }
-
-  const legacyData = path.join(LEGACY_SERVER_DIR, 'data')
-  const dataDir = path.join(SERVER_DIR, 'data')
-  if (fs.existsSync(legacyData) && !fs.existsSync(dataDir)) {
-    fs.cpSync(legacyData, dataDir, { recursive: true })
-    moved.push('数据库 data/')
-  }
-
-  return moved
-}
-
-/** 新位置没有密钥/数据库就看看老布局那边（可能还有一份数据）。没有返回 null */
-function findEnvFile () {
-  for (const file of [ENV_FILE, LEGACY_ENV_FILE]) {
-    if (fs.existsSync(file)) return file
-  }
-  return null
-}
-
-function findDbFile () {
-  for (const file of [DB_FILE, LEGACY_DB_FILE]) {
-    try {
-      fs.statSync(file)
-      return file
-    } catch {}
-  }
-  return null
-}
-
-/** 给主人看的路径：独立目录里的相对云崽根显示，插件里的相对插件显示 */
-function dispPath (file) {
-  if (!file) return '—'
-  return file.startsWith(SERVER_DIR + path.sep) || file === SERVER_DIR
-    ? path.relative(YunzaiRoot, file)
-    : path.relative(PluginPath, file)
-}
-
 /** 08-27 21:43 */
 function fmtTime (ts) {
   const n = Number(ts)
@@ -399,7 +333,7 @@ export class ShareDeploy extends plugin {
       )
     }
 
-    // 已经在新位置跑着就别重复起，pm2 会报名字冲突，报错还不好懂
+    // 已经在跑就别重复起，pm2 会报名字冲突，报错还不好懂
     const running = pm2Proc(PROC_NAME)
     if (isOurProcess(running, SERVER_DIR)) {
       const env = readEnvFile()
@@ -415,8 +349,7 @@ export class ShareDeploy extends plugin {
     await e.reply('正在部署营地ID共享库（要从 git 拉一下服务端代码），几十秒就好…', shouldQuote())
 
     try {
-      // 服务端在仓库的 server 分支里，插件目录不再自带 —— 先把代码弄过来。
-      // 拉代码放在停老进程**之前**：万一拉取失败，正在跑的旧服务还能接着跑
+      // 服务端在仓库的 server 分支里，插件目录不再自带 —— 先把代码弄过来
       if (!git(['--version'], { timeout: 20000 }).ok) {
         throw new Error('没找到 git，拉不了服务端代码。装好 git（重开云崽认 PATH）再来')
       }
@@ -444,18 +377,6 @@ export class ShareDeploy extends plugin {
         codeFromLocal = true
         logger.warn(`[${PluginName}] server 分支拉取失败，用本地已有的代码继续：${fetched.err}`)
       }
-
-      // 老布局的进程还在跑的话，现在停 —— 接下来数据库要搬家，WAL 热拷贝不保险
-      const fromLegacy = isOurProcess(running, LEGACY_SERVER_DIR)
-      if (fromLegacy) {
-        await e.reply('共享库还在老位置（插件目录里）跑着，正在迁到独立目录…', shouldQuote())
-        const del = pm2(['delete', PROC_NAME], { timeout: 30000 })
-        if (!del.ok) throw new Error(`停老位置的服务失败：${del.err || del.out}`)
-        // delete 之后不 save，pm2 重启时会把它从 dump 里复活
-        pm2(['save'], { timeout: 30000 })
-      }
-
-      const moved = migrateLegacyFiles()
 
       const existing = readEnvFile()
       const keys = ensureKeys(existing)
@@ -499,17 +420,9 @@ export class ShareDeploy extends plugin {
         '（防火墙 + 云主机安全组放行这个端口）',
         `进程：${PROC_NAME}，由 pm2 托管`,
         `目录：${path.relative(YunzaiRoot, SERVER_DIR)}/（在插件外面，更新插件不影响它）`,
-        `数据：${dispPath(DB_FILE)}`,
+        `数据：${path.relative(YunzaiRoot, DB_FILE)}`,
         `密钥：${path.relative(YunzaiRoot, ENV_FILE)}（别外泄）`
       ]
-
-      if (fromLegacy || moved.length) {
-        lines.push(
-          '',
-          `已从插件目录的老位置搬来：${moved.join('、') || '（老位置没有要搬的东西）'}，原来的数据接着用。`,
-          '插件 server/ 里剩下的残留文件确认没问题后可以手动删掉。'
-        )
-      }
 
       if (codeFromLocal) {
         lines.push('', '⚠️ 远端没连上，用的是本地已有的服务端代码；连上网后重新部署一次就能更新。')
@@ -541,8 +454,7 @@ export class ShareDeploy extends plugin {
   async status (e) {
     const env = readEnvFile()
     const proc = pm2Proc(PROC_NAME)
-    const fromLegacy = isOurProcess(proc, LEGACY_SERVER_DIR)
-    const ours = isOurProcess(proc, OUR_DIRS)
+    const ours = isOurProcess(proc, SERVER_DIR)
 
     // 本机没搭过库 = 这台是**接入方**。接入方本来就不该有服务端进程，
     // 报「进程没在跑，去部署一个」是彻头彻尾的误导 —— 主人就被这条唬过。
@@ -585,14 +497,7 @@ export class ShareDeploy extends plugin {
         ? `监听：${env.GOK_HOST}:${port}`
         : `监听：所有网卡 ${port} 端口（IPv4 + IPv6）`)
 
-      if (fromLegacy) {
-        // 老布局：进程还挂在插件目录上，但插件更新后那里的代码已经被 git 拿走了，
-        // 进程一重启就起不回来 —— 得让主人知道要迁
-        lines.push('目录：插件 server/（老位置）')
-        lines.push('⚠️ 服务端已分离到仓库 server 分支，发 #营地共享库部署 迁到独立目录，密钥和数据会一起搬过去')
-      } else {
-        lines.push(`目录：${path.relative(YunzaiRoot, SERVER_DIR)}/`)
-      }
+      lines.push(`目录：${path.relative(YunzaiRoot, SERVER_DIR)}/`)
 
       const health = await waitHealth(port, 3000)
       lines.push(`健康检查：${health ? '正常' : '没响应（进程在但连不上，看看 pm2 logs）'}`)
@@ -611,14 +516,13 @@ export class ShareDeploy extends plugin {
       if (restarts > 0) lines.push(`重启次数：${restarts}${restarts > 5 ? '（有点多，看看日志）' : ''}`)
     }
 
-    const db = findDbFile()
     try {
-      lines.push(`数据库：${fmtSize(fs.statSync(db || DB_FILE).size)}（${dispPath(db)}）`)
+      lines.push(`数据库：${fmtSize(fs.statSync(DB_FILE).size)}（${path.relative(YunzaiRoot, DB_FILE)}）`)
     } catch {
       lines.push('数据库：还没生成')
     }
 
-    lines.push(`密钥文件：${findEnvFile() ? `已生成（${dispPath(findEnvFile())}）` : '没有'}`)
+    lines.push(`密钥文件：${fs.existsSync(ENV_FILE) ? `已生成（${path.relative(YunzaiRoot, ENV_FILE)}）` : '没有'}`)
 
     return e.reply(lines.join('\n'), shouldQuote())
   }
@@ -632,8 +536,8 @@ export class ShareDeploy extends plugin {
       return e.reply([
         '要卸载营地ID共享库吗？这一步只停服务，密钥和数据都留着：',
         '',
-        `· 密钥：${dispPath(findEnvFile() || ENV_FILE)}`,
-        `· 数据：${dispPath(findDbFile() || DB_FILE)}`,
+        `· 密钥：${path.relative(YunzaiRoot, ENV_FILE)}`,
+        `· 数据：${path.relative(YunzaiRoot, DB_FILE)}`,
         '',
         '重新部署能接着用。想彻底清干净就把上面两个自己删掉。',
         '',
@@ -642,7 +546,7 @@ export class ShareDeploy extends plugin {
     }
 
     const proc = pm2Proc(PROC_NAME)
-    if (proc && !isOurProcess(proc, OUR_DIRS)) {
+    if (proc && !isOurProcess(proc, SERVER_DIR)) {
       // 同名但不是我们的，宁可不动 —— 停错了别人的服务很难查
       return e.reply(
         '找到同名的 pm2 进程，但它跑的目录不在本插件的服务端目录里，' +
@@ -677,8 +581,8 @@ export class ShareDeploy extends plugin {
     lines.push(
       '',
       '密钥和数据都留着，重新部署能接着用：',
-      `· ${dispPath(findEnvFile() || ENV_FILE)}`,
-      findDbFile() ? `· ${dispPath(findDbFile())}` : '· （还没有数据库文件）',
+      `· ${path.relative(YunzaiRoot, ENV_FILE)}`,
+      fs.existsSync(DB_FILE) ? `· ${path.relative(YunzaiRoot, DB_FILE)}` : '· （还没有数据库文件）',
       '',
       '彻底不想要了就把这两个删掉，别只删其中一个。'
     )
