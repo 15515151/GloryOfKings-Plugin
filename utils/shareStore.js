@@ -18,7 +18,7 @@
  * ## 缓存分层
  *
  *   本地 UserData.yaml（同步，命中即返回）
- *     → 内存 Map（2 小时）
+ *     → 内存 Map（5 秒，只做连发防抖，不是长期缓存）
  *       → in-flight 合并（冷启动时并发同 QQ 只发一次请求）
  *         → 落盘 data/share/idcache.yaml（重启后第一条指令也不慢）
  *           → 网络（1.5 秒超时，失败有熔断）
@@ -28,20 +28,23 @@ import fetch from 'node-fetch'
 import { PluginData, Config } from '#components'
 import { readYamlFile, writeYamlFile } from './yamlUtils.js'
 import { quarantineCorrupt } from './safeStore.js'
-import { getCurrentId } from './localBind.js'
+import { getCurrentId, getBoundIds } from './localBind.js'
 import authStore from './authStore.js'
 
 const CACHE_FILE = path.join(PluginData, 'share', 'idcache.yaml')
 const CACHE_SCHEMA = 1
 
-/** 正值缓存 2 小时。数据只有用户重新绑定才会变，2 小时是「撤销生效延迟」和请求量的折中 */
-const POSITIVE_TTL_MS = 2 * 3600 * 1000
-
 /**
- * 负缓存 30 分钟。**必须有**：库里绝大多数的 QQ 是没共享过的，
- * 不留负缓存的话，每个没共享的用户发的每条指令都要打一次服务端。
+ * 本地缓存的存活时间。
+ *
+ * 只有 5 秒 —— 它现在唯一的作用是「同一个用户连发几条指令时不重复问服务端」，
+ * **不是**省请求。真正省请求的是服务端那边的 `since` 比对（没变更时只回 40 字节）。
+ *
+ * 原先设的是正值 2 小时、负值 30 分钟，那是按「省流量」想的。代价是用户在 A 机器人上
+ * 刚开启共享，B 机器人最长要等 2 小时才看得到 —— 这个取舍不划算：共享的意义就是
+ * 「换个机器人马上能用」，让它等两小时等于把功能的意义削掉一半。
  */
-const NEGATIVE_TTL_MS = 30 * 60 * 1000
+const CACHE_TTL_MS = 5000
 
 /** 读请求超时。用户指令在等，宁可查不到也不能卡住 */
 const READ_TIMEOUT_MS = 1500
@@ -57,8 +60,25 @@ const CIRCUIT_MAX_MS = 10 * 60 * 1000
 /** 落盘缓存整份丢弃重建的时限，防止 qq 键无限增长 */
 const DISK_MAX_AGE_MS = 24 * 3600 * 1000
 
-/** 同一个 QQ 的并发查询合并成一次请求 */
+/** 当轮已经合并过、不必重复请求的 QQ。查询合并用，见 inflight 的注释 */
 const inflight = new Map()
+
+/**
+ * 「这个 QQ 在共享库里有记录」的本地标记 —— 也就是「他开过共享」。
+ *
+ * 为什么需要它：用户在 A 机器人上开了共享，跑到 B 机器人上又绑了个新号。
+ * B 这边的本地开关是关的（他从没在 B 上开过），按本地开关判断就**不会把新号传上去**，
+ * 于是 A 那边永远看不到 B 的这个号。可「我开了共享」是个**跨机器人的意愿**，
+ * 不该因为在哪台机器上开的有区别。
+ *
+ * 判据换成「库里还有没有你的记录」就天然自洽了：你一旦关掉共享，服务端会删记录并立墓碑，
+ * 别的机器人再查你就是 404，也就不会再替你上传了。
+ */
+const knownShared = new Map()
+
+/** 同一个 QQ 多久对一次账。库里数据变得很慢，每小时一次足够 */
+const RECONCILE_INTERVAL_MS = 60 * 60 * 1000
+const lastReconcileAt = new Map()
 
 /** qq -> {campId, until, fetchedAt, updatedAt}。campId 为空串表示「确认没有」 */
 const memoryCache = new Map()
@@ -129,8 +149,8 @@ export function isShareReady () {
 /**
  * 本机有没有可查别人号的公共登录态。没有的话，共享库给了营地ID 也查不动。
  *
- * 刻意不做 memo：它只在「网络往返成功之后」才会被调到（共享命中走的是 2 小时缓存，
- * 没共享的人走 30 分钟负缓存），频率极低；而加了 memo 就会出现「主人刚扫完码全局登录，
+ * 刻意不做 memo：它只在「网络往返成功之后」才会被调到，频率极低；
+ * 而加了 memo 就会出现「主人刚扫完码全局登录，
  * 接下来半分钟共享还是判定成用不了」这种说不清的滞后。
  */
 function hasUsableGlobalAccount () {
@@ -290,6 +310,15 @@ function recordSuccess () {
 }
 
 /**
+ * 手动复位熔断。
+ * 服务端已经恢复了、但指数退避的时间还没走到时会用得上；
+ * 脱机测试跑完「服务端不可达」那组用例后也要靠它接着测正常路径。
+ */
+export function resetCircuitBreaker () {
+  recordSuccess()
+}
+
+/**
  * 查询一次共享库。
  *
  * @returns {Promise<{campId: string, updatedAt: number}|{unchanged: true}|null>}
@@ -327,6 +356,66 @@ async function requestShare (cfg, qq, since) {
   return { campId, updatedAt: Number(data?.updatedAt) || Date.now() }
 }
 
+/* --------------------------------------------------------------- 对账 */
+
+/**
+ * 本地**有绑定**的用户，后台和共享库对一次账。
+ *
+ * 解决这个场景：用户在 A 机器人上开了共享，又跑到 B 机器人上绑了个新号。
+ * B 这边的本地开关是关的（他从没在 B 上开过），按本地开关判断就不会上传 ——
+ * 于是 A 那边永远看不到 B 这个号。可「我开了共享」是个**跨机器人的意愿**。
+ *
+ * 对账的判据是「库里还有没有你的记录」：有，说明你开着共享，B 这边的绑定也跟着上去。
+ * 你一旦关掉共享，服务端会删记录并立墓碑，别的机器人再查你就是 404，
+ * 自然也就不会再替你上传了 —— 不需要额外的同步协议。
+ *
+ * 三条自我约束：
+ *  - **绝不阻塞、绝不抛**：它挂在 resolveCurrentId 的本地命中分支上，用户那条指令
+ *    该多快还多快，对账成不成功都不影响他
+ *  - 每个 QQ 每小时最多一次
+ *  - 本机没有绑定就什么都不做（没东西可传）
+ */
+async function reconcileSharedUser (qq) {
+  try {
+    const now = Date.now()
+    if (now - (lastReconcileAt.get(qq) || 0) < RECONCILE_INTERVAL_MS) return
+    lastReconcileAt.set(qq, now)
+
+    const cfg = readShareConfig()
+    if (!cfg.enabled || !cfg.apiUrl || !cfg.token) return
+    if (circuitOpen()) return
+
+    const ids = getBoundIds(qq)
+    if (!ids.length) return
+
+    const result = await requestShare(cfg, qq, 0)
+    if (!result?.campId) {
+      // 库里没有他了 —— 说明他撤销了共享（服务端会留墓碑，这里也是 404）。
+      // 必须把标记摘掉，否则本机新绑的号会被一直传上去
+      knownShared.delete(qq)
+      return
+    }
+
+    knownShared.set(qq, true)
+
+    // 传一次就行：PUT 是「本实例的全量替换」，天然的幂等
+    const pushed = await pushBind(qq, ids, getCurrentId(qq) || '')
+    if (pushed.ok) {
+      logger?.debug?.(`[营地共享] ${qq} 在别的机器人上开过共享，本机这 ${ids.length} 个绑定已同步过去`)
+    }
+  } catch (error) {
+    warnOnce('reconcile', `[营地共享] 对账失败：${error?.message || error}`)
+  }
+}
+
+/**
+ * 这个 QQ 是不是「开过共享的人」。
+ * 供 utils/shareUsers.js 判断「本机绑定变了要不要往上传」。
+ */
+export function isKnownShared (userId) {
+  return knownShared.get(String(userId ?? '').trim()) === true
+}
+
 /* --------------------------------------------------------------- 对外主函数 */
 
 /**
@@ -352,7 +441,12 @@ async function resolveCurrentIdInner (userId, { share = true } = {}) {
 
   // 本地永远优先。本机绑过的人连缓存都不用查
   const local = getCurrentId(qq)
-  if (local) return { campId: local, source: 'local' }
+  if (local) {
+    // 顺手后台对一次账：他在别的机器人上开过共享的话，本机这组绑定也该传上去。
+    // 不 await —— 用户这条指令该多快还多快，对账是它自己的事
+    reconcileSharedUser(qq).catch(() => {})
+    return { campId: local, source: 'local' }
+  }
 
   if (!share) return { campId: null, source: 'none' }
 
@@ -394,27 +488,32 @@ async function resolveCurrentIdInner (userId, { share = true } = {}) {
       if (result?.unchanged) {
         // 服务端说没变，把缓存里的值续命
         if (cached) {
-          writeMemory(qq, { campId: cached.campId, ttlMs: cached.campId ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS, updatedAt: cached.updatedAt })
+          writeMemory(qq, { campId: cached.campId, ttlMs: CACHE_TTL_MS, updatedAt: cached.updatedAt })
           return cached.campId ? { campId: cached.campId, source: 'cache' } : { campId: null, source: 'none' }
         }
         return { campId: null, source: 'none' }
       }
 
       if (!result) {
-        writeMemory(qq, { campId: '', ttlMs: NEGATIVE_TTL_MS })
+        // 库里没有他（或者他已经撤销了）—— 把「开过共享」的标记摘掉，
+        // 否则本机新绑的号还会被一直传上去
+        knownShared.delete(qq)
+        writeMemory(qq, { campId: '', ttlMs: CACHE_TTL_MS })
         return { campId: null, source: 'none' }
       }
+
+      knownShared.set(qq, true)
 
       // 拿到了营地ID，但本机没有能查别人号的公共登录态 —— 给了也用不了，
       // 这时候必须说成 degraded，否则用户会照着「未绑定」的提示去重新绑一遍
       if (result.campId && !hasUsableGlobalAccount()) {
-        writeMemory(qq, { campId: result.campId, ttlMs: POSITIVE_TTL_MS, updatedAt: result.updatedAt })
+        writeMemory(qq, { campId: result.campId, ttlMs: CACHE_TTL_MS, updatedAt: result.updatedAt })
         return { campId: null, source: 'degraded', reason: 'no_global_account' }
       }
 
       writeMemory(qq, {
         campId: result.campId,
-        ttlMs: result.campId ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS,
+        ttlMs: CACHE_TTL_MS,
         updatedAt: result.updatedAt
       })
 

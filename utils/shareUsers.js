@@ -15,7 +15,7 @@ import path from 'node:path'
 import { PluginData } from '#components'
 import { readYamlFile, writeYamlFile } from './yamlUtils.js'
 import { getBoundIds, getCurrentId } from './localBind.js'
-import { pushBind, revokeBind, isShareReady } from './shareStore.js'
+import { pushBind, revokeBind, isShareReady, isKnownShared } from './shareStore.js'
 
 const USERS_FILE = path.join(PluginData, 'share', 'users.yaml')
 const USERS_SCHEMA = 1
@@ -134,8 +134,15 @@ export async function syncUserBind (userId) {
   const qq = normalize(userId)
   if (!qq) return { ok: true, skipped: 'no-user' }
 
-  // 没开共享的人连一次网络请求都不该发
-  if (!getUserShareState(qq).enabled) return { ok: true, skipped: 'not-sharing' }
+  // 两个判据任一成立就同步：
+  //  - 本机开关开着：用户在这台机器上明确开过
+  //  - 库里有他的记录：他在**别的机器人**上开过共享。
+  //    少了后一条，用户在 A 机器人上开的共享，B 机器人上新绑的号就永远传不上去 ——
+  //    「我开了共享」是跨机器人的意愿，不该看在哪儿开的
+  if (!getUserShareState(qq).enabled && !isKnownShared(qq)) {
+    return { ok: true, skipped: 'not-sharing' }
+  }
+
   if (!isShareReady()) return { ok: true, skipped: 'not-connected' }
 
   const ids = getBoundIds(qq)

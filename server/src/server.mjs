@@ -15,14 +15,14 @@ import { bindRoutes } from './routes/bind.mjs'
 import { adminRoutes } from './routes/admin.mjs'
 
 /**
- * 单 IP 每分钟 120 次、允许 60 次突发。
+ * 单 IP 的限流额度。默认 120 次/分钟、允许 60 次突发，可用环境变量调。
  *
- * 额度是按「一个 bot 冷启动时可能同时查好几个用户」估的。客户端有 2 小时缓存，
- * 稳态下远用不到这个数——限流主要是挡住扫描器，不是卡正常使用，
- * 所以宁可给宽一点，免得误伤正经客户端。
+ * 客户端那边每条指令最多问一次（本地只有 5 秒防抖，没变更时服务端只回 40 字节），
+ * 正常使用远够。但多个 bot 挤在同一个 NAT 或反代后面时它们**共用一个 IP**，
+ * 那种部署就得把额度放大 —— 所以这两个值是可配的。
  */
-const IP_RATE_PER_MINUTE = 120
-const IP_BURST = 60
+const DEFAULT_IP_RATE_PER_MINUTE = 120
+const DEFAULT_IP_BURST = 60
 
 /** 全局读上限。自保用：被当成免费代理刷时至少不会把库拖垮 */
 const GLOBAL_READ_PER_MINUTE = 1000
@@ -77,7 +77,10 @@ export async function startServer () {
   db = openDatabase(config.dbPath)
 
   const limiters = {
-    ipBucket: new TokenBucket(IP_RATE_PER_MINUTE, IP_BURST),
+    ipBucket: new TokenBucket(
+      config.ipRatePerMinute || DEFAULT_IP_RATE_PER_MINUTE,
+      config.ipBurst || DEFAULT_IP_BURST
+    ),
     globalRead: new WindowCounter(GLOBAL_READ_PER_MINUTE),
     // (client, qq) 响应冷却，见 ratelimit.mjs
     readCooldown: new Cooldown(1000),

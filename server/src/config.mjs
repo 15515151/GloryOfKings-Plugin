@@ -165,8 +165,15 @@ export function loadConfig (env = null) {
     salt,
     adminSecret,
     trustProxy: trustProxyRaw === '' ? loopback : trustProxyRaw === '1',
-    // (client, qq) 的响应冷却。0 = 关掉（压测和脱机测试时用），见 ratelimit.mjs 的 Cooldown
-    readCooldownMs: readInt(merged, 'GOK_READ_COOLDOWN_MS', 60000, 0, 3600000),
+    // (client, qq) 的响应冷却，只做防抖。见 ratelimit.mjs 的 Cooldown：
+    // 客户端本地只缓存 5 秒，这里要是还设 60 秒，那个 5 秒就白设了 ——
+    // 客户端来问，服务端却回 60 秒前的旧响应
+    readCooldownMs: readInt(merged, 'GOK_READ_COOLDOWN_MS', 10000, 0, 3600000),
+    // 按来源 IP 的令牌桶。挡扫描器用的，不参与授权。
+    // 做成可配是因为量级跟机器无关、跟「有多少 bot 挂在这台后面」有关：
+    // 多个 bot 挤在同一个 NAT 或反代后面时它们共用一个 IP，额度得跟着放大
+    ipRatePerMinute: readInt(merged, 'GOK_IP_RATE_PER_MINUTE', 120, 0, 100000),
+    ipBurst: readInt(merged, 'GOK_IP_BURST', 60, 0, 100000),
     // 仅供日志与文档展示，服务本身不依赖它
     publicUrl: String(merged.GOK_PUBLIC_URL || '').trim()
   }

@@ -75,7 +75,7 @@ export class ShareBind extends plugin {
 
     return e.reply([
       '已关闭营地ID共享，之前传上去的也删了。',
-      '别的机器人最多要 2 小时才会看不到，那之后就没你这份数据了。'
+      '别的机器人几秒内就看不到了。'
     ].join('\n'), shouldQuote())
   }
 
