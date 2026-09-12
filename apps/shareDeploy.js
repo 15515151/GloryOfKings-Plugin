@@ -21,9 +21,10 @@
  * 1. **令牌只在私聊里出现**。群里执行的话结果一律走私聊，群里只回一句「已私聊」。
  * 2. **卸载只认自己起的那个进程**：cwd 或入口脚本必须落在 server 目录下。
  *    光比进程名会把别人的东西停掉（这条教训是从 meme 的卸载逻辑带过来的）。
- * 3. **盐和密钥同生共死**。换了盐，数据库里所有 QQ 的哈希当场变成无意义的字符串 ——
- *    查询永远 404，等于所有人的共享记录一起作废。所以重新部署时盐是复用不是重造；
- *    卸载确认则把密钥连数据一起删，绝不只删一半（只留锁不留钥匙是错的）。
+ * 3. **盐要复用，卸载也不删**。换了盐，数据库里所有 QQ 的哈希当场变成无意义的
+ *    字符串 —— 查询永远 404，等于所有人的共享记录一起作废。所以重新部署时
+ *    盐是复用不是重造；卸载只清代码，`.env` 和 `data/` 原地保留，
+ *    重新部署接着用原来的数据。要彻底清就两样一起手动删，不能只删一半。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -216,24 +217,43 @@ function originUrl () {
 }
 
 /**
- * 把 server 分支的代码弄到 SERVER_DIR：没有就浅克隆，已有克隆就拉最新。
- * 只动被 git 跟踪的文件 —— .env 和 data/ 不在那个分支里，永远不会被更新冲掉。
+ * 把 server 分支的代码弄到 SERVER_DIR，三种起点都接得住：
+ *  - 目录不存在 → 浅克隆
+ *  - 已是克隆 → fetch + reset 到远端最新（只动被跟踪的文件，.env 和 data/ 冲不掉）
+ *  - 目录存在但不是克隆（卸载后只剩 .env 和 data/ 的那种）→ git init 接回克隆，
+ *    reset --hard 同样只写被跟踪的文件
+ * 非克隆目录里既没有 .env 也没有 data/ 时，多半是别人的东西，拒绝动。
  */
+/** 已有克隆（或刚 init 完）时：拉远端最新，reset --hard 只动被跟踪的文件 */
+function pullIntoExistingClone () {
+  const pulled = git(['fetch', '--depth', '1', 'origin', SERVER_BRANCH], { cwd: SERVER_DIR })
+  if (!pulled.ok) return pulled
+  return git(['reset', '--hard', 'FETCH_HEAD'], { cwd: SERVER_DIR })
+}
+
 function fetchServerCode (url) {
   if (fs.existsSync(path.join(SERVER_DIR, '.git'))) {
-    const pulled = git(['fetch', '--depth', '1', 'origin', SERVER_BRANCH], { cwd: SERVER_DIR })
-    if (!pulled.ok) return pulled
-    return git(['reset', '--hard', 'FETCH_HEAD'], { cwd: SERVER_DIR })
+    return pullIntoExistingClone()
   }
 
-  if (fs.existsSync(SERVER_DIR)) {
+  if (!fs.existsSync(SERVER_DIR)) {
+    return git(['clone', '--depth', '1', '--branch', SERVER_BRANCH, url, SERVER_DIR], { timeout: 300000 })
+  }
+
+  // 目录在但不是克隆：多半是卸载后只剩 .env 和 data/ 的残留，git init 接回克隆
+  const ours = fs.existsSync(ENV_FILE) || fs.existsSync(path.join(SERVER_DIR, 'data'))
+  if (!ours) {
     return {
       ok: false,
-      err: `${SERVER_DIR} 已经存在，而且不是 git 克隆 —— 不知道里面是什么，不敢动它。确认没用了就手动删掉再部署`
+      err: `${SERVER_DIR} 已经存在，而且看不出是本插件用过的目录 —— 不知道里面是什么，不敢动它。确认没用了就手动删掉再部署`
     }
   }
 
-  return git(['clone', '--depth', '1', '--branch', SERVER_BRANCH, url, SERVER_DIR], { timeout: 300000 })
+  const inited = git(['init'], { cwd: SERVER_DIR })
+  if (!inited.ok) return inited
+  const remote = git(['remote', 'add', 'origin', url], { cwd: SERVER_DIR })
+  if (!remote.ok) return remote
+  return pullIntoExistingClone()
 }
 
 /** 08-27 21:43 */
@@ -534,13 +554,13 @@ export class ShareDeploy extends plugin {
 
     if (!confirmed) {
       return e.reply([
-        '要卸载营地ID共享库吗？确认后是**全部删除**：',
+        '要卸载营地ID共享库吗？确认后会停掉 pm2 进程、清掉代码，但留下：',
         '',
-        '· pm2 进程',
-        `· 整个 ${path.relative(YunzaiRoot, SERVER_DIR)}/ 目录（代码、密钥、数据库一起删）`,
+        `· 密钥：${path.relative(YunzaiRoot, ENV_FILE)}`,
+        `· 数据：${path.relative(YunzaiRoot, DB_FILE)}`,
         '',
-        '库里是 QQ 的加盐哈希，密钥必须和数据库同生共死 —— 要删就一起删，',
-        '没有「只停服务、留着数据」的中间态。想留数据就先把整个目录备份走。',
+        '重新部署能接着用原来的数据（盐不变，记录都认）。',
+        '彻底不想要了就把这两样手动删掉 —— 要删就一起删，别只删一个。',
         '',
         '确认就发：#营地共享库卸载确认'
       ].join('\n'), shouldQuote())
@@ -571,15 +591,18 @@ export class ShareDeploy extends plugin {
       done.push('没有在跑的进程')
     }
 
-    // 进程停稳了再删目录。密钥和数据在这里一起走 —— 见文件头第 3 条规矩
+    // 只清代码，.env 和 data/ 原地保留 —— 盐和数据库同生共死，一起留着重新部署才接得上
     if (fs.existsSync(SERVER_DIR)) {
       try {
-        fs.rmSync(SERVER_DIR, { recursive: true, force: true })
-        done.push(`已删除 ${path.relative(YunzaiRoot, SERVER_DIR)}/`)
+        for (const entry of fs.readdirSync(SERVER_DIR, { withFileTypes: true })) {
+          if (entry.name === '.env' || entry.name === 'data') continue
+          fs.rmSync(path.join(SERVER_DIR, entry.name), { recursive: true, force: true })
+        }
+        done.push('已清掉代码（密钥和数据保留）')
       } catch (error) {
         failed.push(
-          `删除 ${path.relative(YunzaiRoot, SERVER_DIR)}/ 失败（${error?.message || error}）。` +
-          '多半是文件还被占着，稍等一下手动删掉即可'
+          `清代码失败（${error?.message || error}）。多半是文件还被占着，稍等一下手动删掉即可，` +
+          `注意 ${path.relative(YunzaiRoot, ENV_FILE)} 和 data/ 别删`
         )
       }
     } else {
@@ -591,6 +614,15 @@ export class ShareDeploy extends plugin {
 
     const lines = [`卸载完成：${done.join('、')}`]
     if (failed.length) lines.push('', '但有几步没成：', ...failed.map(t => `· ${t}`))
+
+    lines.push(
+      '',
+      '密钥和数据都留着，重新部署能接着用：',
+      `· ${path.relative(YunzaiRoot, ENV_FILE)}`,
+      fs.existsSync(DB_FILE) ? `· ${path.relative(YunzaiRoot, DB_FILE)}` : '· （还没有数据库文件）',
+      '',
+      '彻底不想要了就把这两样手动删掉，要删就一起删。'
+    )
 
     return e.reply(lines.join('\n'), shouldQuote())
   }
