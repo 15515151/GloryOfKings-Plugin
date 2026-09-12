@@ -25,7 +25,7 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import fetch from 'node-fetch'
 import { PluginPath, PluginName } from '#components'
-import { shouldQuote, readShareConfig, readUserData, reconcileNow } from '#utils'
+import { shouldQuote, readShareConfig, readUserData, reconcileNow, isShareReady } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import { sendMaster } from '../utils/masterMsg.js'
 
@@ -577,6 +577,10 @@ export class ShareDeploy extends plugin {
   /**
    * 把本机**所有**绑定过的用户全量对一遍账。
    *
+   * ⚠️ 用的是**客户端配置**（`shareApiUrl` / `shareToken`），不是 `server/.env` ——
+   * 所以**接入别人库的机器人一样能用**，不是只有搭库那台才能跑。
+   * 这里以前读的是 readServerEnv()，把接入方全挡在外面了。
+   *
    * 自动对账是「用户发指令时后台顺手做」、还带一小时节流；这条是人工兜底 ——
    * 刚接入完共享库、或者怀疑某些人的数据没传上去时手动推一遍。
    *
@@ -584,9 +588,8 @@ export class ShareDeploy extends plugin {
    * 这是「共享」而不是「上传所有人的数据」，边界必须守住。
    */
   async syncAll (e) {
-    const server = this.readServerEnv()
-    if (!server) {
-      return e.reply('这台还没部署营地ID共享库，先发 #营地共享库部署', shouldQuote())
+    if (!isShareReady()) {
+      return e.reply('这台还没接入营地ID共享库，发 #营地共享库 看看当前状态和接入办法', shouldQuote())
     }
 
     const store = readUserData()

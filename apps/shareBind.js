@@ -13,7 +13,7 @@
 import { Config, PluginName } from '#components'
 import {
   AT_HEAD, AT_TAIL, shouldQuote,
-  readShareConfig, probeShare, isShareReady, getShareStatus, getBoundIds, getCurrentId, pushBind
+  readShareConfig, probeShare, isShareReady, getShareStatus, getBoundIds, reconcileNow
 } from '#utils'
 import { enableSharing, disableSharing, getUserShareState } from '../utils/shareUsers.js'
 import { markDeclined, clearDeclined } from '../utils/shareNotifyState.js'
@@ -87,6 +87,10 @@ export class ShareBind extends plugin {
    *
    * 自动同步是后台跑的、还带一小时节流，用户「我明明开了共享对方却查不到」时
    * 需要一个立刻能按的按钮 —— 尤其是他刚在别处改完绑定、不想等的时候。
+   *
+   * ⚠️ 判据是**「库里有没有你」**，不是「本机开没开共享」：用户在 A 机器人上开的共享，
+   * 到 B 机器人上想手动推一次也该认 —— B 的本地开关本来就该是关的（他从没在 B 开过）。
+   * 用本地开关判断会把「已经接入的人」挡在外面，这跟对账那边的判据也不一致。
    */
   async resync (e) {
     if (!isShareReady()) {
@@ -95,20 +99,22 @@ export class ShareBind extends plugin {
 
     const qq = String(e.user_id)
     const ids = getBoundIds(qq)
-
     if (!ids.length) {
       return e.reply('你还没有绑定营地ID，先发 #绑定营地 [营地ID]', shouldQuote())
     }
-    if (!getUserShareState(qq).enabled) {
+
+    // reconcileNow 内部就是「查库 → 在册就把本机这组传上去」，正是手动同步要的语义。
+    // 它还会顺手维护「这个人开过共享」的标记，后续自动同步也跟着通了
+    const result = await reconcileNow(qq)
+
+    if (result === 'not-shared') {
       return e.reply('你还没开启共享，先发 #开启营地ID共享', shouldQuote())
     }
-
-    const result = await pushBind(qq, ids, getCurrentId(qq) || '')
-    if (!result.ok) {
-      return e.reply(`同步失败：${result.message}`, shouldQuote())
+    if (result === 'failed') {
+      return e.reply('连不上共享库，稍后再试', shouldQuote())
     }
 
-    return e.reply(`已重新同步 ${result.count} 个营地ID 到共享库，别的机器人现在就能查到。`, shouldQuote())
+    return e.reply(`已同步 ${ids.length} 个营地ID 到共享库，别的机器人现在就能查到。`, shouldQuote())
   }
 
   async status (e) {
