@@ -134,7 +134,7 @@ pnpm install
 几条要知道的边界：
 
 - **共享库得有人搭**。想自己搭的话，主人发一句 `#营地共享库部署` 就装好了 ——
-  服务端代码在仓库的 [server 分支](https://github.com/cchanlan/GloryOfKings-Plugin/tree/server)，
+  服务端代码在仓库的 `server` 分支（gitcode / gitee / GitHub 三个源都有），
   部署指令会把它克隆到 `<云崽根>/gok-share-server/` 独立跑（pm2 托管、密钥自动生成、
   装完把令牌私聊给你），更新插件不会动到它的数据；把服务器防火墙（云主机还要加安全组）
   的 8787 端口放行，外面就能连。也可以用朋友搭好的。
