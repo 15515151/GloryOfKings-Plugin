@@ -27,6 +27,7 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, isPureShadow, collectSnapshot, mergeSubState } from '../utils/pushStore.js'
 import { membersOfGroup, isIndexReady, refreshGroupIndex } from '../utils/groupIndex.js'
+import { mapConcurrent } from '../utils/parallel.js'
 import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser, isProfileHidden, getCurrentId, ApiService } from '#utils'
 import { heroIconUrl } from '../utils/reportStore.js'
 
@@ -223,28 +224,23 @@ export class WhoIsPlaying extends plugin {
       const eta = Math.max(1, Math.ceil(due.length * 1.5 / workers))
       await e.reply(`正在刷新 ${due.length} 人的在线状态，约需 ${eta} 秒`, shouldQuote())
 
-      // 采集并发、写盘串行：请求会被 api 层轮着分给不同账号（见 #rotateGlobals），
+      // 采集并发、写盘串行：请求会被 api 层轮着分给不同账号（见 utils/parallel.js），
       // 所以开 N 路协程就能真正并行；而 mergeSubState 是**整表读-改-写**，
       // 并发调它会互相覆盖（后写的把先写的冲掉），必须等采完再一个一个写。
-      const queue = [...due]
       const collected = []
-      const worker = async () => {
-        while (queue.length) {
-          const [qq, sub] = queue.shift()
-          const campId = getCurrentId(qq)
-          if (!campId || isProfileHidden(campId)) continue
+      await mapConcurrent(due, async ([qq, sub]) => {
+        const campId = getCurrentId(qq)
+        if (!campId || isProfileHidden(campId)) return
 
-          try {
-            const { patch } = await collectSnapshot(qq, campId, sub)
-            if (Object.keys(patch).length) collected.push([qq, patch])
-          } catch (error) {
-            // 单个人失败不该毁掉整张图：留旧快照（图上会标「数据较旧」）
-            logger.debug(`[王者谁在打游戏] 现刷 ${qq} 失败: ${error.message}`)
-          }
+        try {
+          const { patch } = await collectSnapshot(qq, campId, sub)
+          if (Object.keys(patch).length) collected.push([qq, patch])
+        } catch (error) {
+          // 单个人失败不该毁掉整张图：留旧快照（图上会标「数据较旧」）
+          logger.debug(`[王者谁在打游戏] 现刷 ${qq} 失败: ${error.message}`)
         }
-      }
+      })
 
-      await Promise.all(Array.from({ length: workers }, worker))
       for (const [qq, patch] of collected) mergeSubState(qq, patch)
     } finally {
       refreshing = false

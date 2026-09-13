@@ -20,6 +20,7 @@ import { readYamlFile, writeYamlFile } from './yamlUtils.js'
 import { quarantineCorrupt } from './safeStore.js'
 import { collectBattles, getArchiveRange } from './battleArchive.js'
 import { getAllBindings, readSnapshot } from './rankStore.js'
+import { mapConcurrent } from './parallel.js'
 import { loadPushList } from './pushStore.js'
 import { summarizeReport, getHeroNameMap, summarizeGroup } from './reportStore.js'
 import { PluginData } from '#components'
@@ -207,16 +208,22 @@ export async function collectGroupReport ({ kind = 'daily', fromSec = 0, toSec =
   // 覆盖边界取所有成员里**最差**的那个（最晚的水位）：图上只能承诺「大家都覆盖到了这里」
   let coveredFrom = 0
 
-  for (const { campId, qq } of targets) {
-    let collected
+  // 并发采集：每个成员至少一次请求，25 个人串行就是半分多钟。
+  // mapConcurrent 按 targets 原序返回，下面拼 members 的顺序不受影响。
+  const collectedList = await mapConcurrent(targets, async ({ campId, qq }) => {
     try {
-      collected = await collectBattles(campId, qq, fromSec, { maxPages, toSec })
+      return { campId, qq, collected: await collectBattles(campId, qq, fromSec, { maxPages, toSec }) }
     } catch (error) {
       // 单个成员失败（登录态失效 / 频控）不能让整份群报挂掉，跳过就是少一行
       logger.debug(`[王者群报] ${campId} 采集失败: ${error.message}`)
-      continue
+      return null
     }
+  })
 
+  for (const item of collectedList) {
+    if (!item) continue
+
+    const { campId, qq, collected } = item
     if (collected.truncated) truncated = true
     if (collected.coveredFrom > coveredFrom) coveredFrom = collected.coveredFrom
 

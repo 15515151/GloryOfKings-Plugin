@@ -20,6 +20,7 @@ import { quarantineCorrupt } from './safeStore.js'
 import { readYamlFile } from './yamlUtils.js'
 import { isBlackUser } from './blackList.js'
 import ApiService from './api.js'
+import { mapConcurrent } from './parallel.js'
 import { isProfileHidden } from './hiddenProfiles.js'
 import { PluginData } from '#components'
 
@@ -267,12 +268,14 @@ export async function collectRankData({ force = false, ttl = SNAPSHOT_TTL } = {}
   let failed = 0
   let hidden = 0
 
-  for (const [campId, botUserId] of targets) {
+  // 并发采集：每个请求会被 api 层轮着分给不同的全局账号（见 utils/parallel.js 的文件头）。
+  // 写 entries 和两个计数都是同步动作，多路协程不会互相踩；每次请求的耗时远大于自增本身。
+  await mapConcurrent(targets, async ([campId, botUserId]) => {
     // 隐藏了主页的号：24 小时内不再主动查（见 utils/hiddenProfiles.js），
     // 沿用上一次快照里的数据——和「采集失败」走同一条路
     if (isProfileHidden(campId)) {
       keepOld(entries, snapshot, campId)
-      continue
+      return
     }
 
     const info = await fetchOne(campId, botUserId)
@@ -287,7 +290,7 @@ export async function collectRankData({ force = false, ttl = SNAPSHOT_TTL } = {}
       failed += 1
       keepOld(entries, snapshot, campId)
     }
-  }
+  })
 
   const result = { updatedAt: Date.now(), entries }
   writeSnapshot(result)

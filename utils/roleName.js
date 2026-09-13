@@ -1,4 +1,5 @@
 import { ApiService, cache } from '#utils'
+import { mapConcurrent } from './parallel.js'
 
 // 拿一次昵称要打营地接口，命中缓存就不用再打；空结果单独压短一点
 const ROLE_NAME_TTL = 600
@@ -14,15 +15,16 @@ const EMPTY_ROLE_NAME_TTL = 60
 export async function fetchRoleNames (ids = [], botUserId = '') {
   const nameMap = {}
 
-  for (const id of ids) {
+  // 并发查：命中缓存的当场返回，没命中的那几发交给 api 层轮着分给不同账号
+  await mapConcurrent(ids, async (id) => {
     const campId = String(id || '')
-    if (!campId) continue
+    if (!campId) return
 
     const cacheKey = `gok:roleName:${campId}`
     const cached = cache.get(cacheKey)
     if (cached !== undefined) {
       nameMap[campId] = cached
-      continue
+      return
     }
 
     let roleName = ''
@@ -38,7 +40,7 @@ export async function fetchRoleNames (ids = [], botUserId = '') {
     // 空结果只压 60 秒：刚绑定还没登录态时拉不到昵称，压 10 分钟会让 ID 一直裸奔
     cache.set(cacheKey, roleName, roleName ? ROLE_NAME_TTL : EMPTY_ROLE_NAME_TTL)
     nameMap[campId] = roleName
-  }
+  })
 
   return nameMap
 }
