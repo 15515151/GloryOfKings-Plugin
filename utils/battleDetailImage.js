@@ -215,7 +215,16 @@ function isRolesComplete (detail) {
 export async function fetchBattleDetail (ID, battle, requesterBotUserId = '', { waitComplete = 0, gapMs = 9000 } = {}) {
   for (let attempt = 0; ; attempt += 1) {
     const detail = await fetchBattleDetailOnce(ID, battle, requesterBotUserId)
-    if (!detail) return null
+
+    // 接口整个还没落库时（刚打完那一两秒，服务端会回 -20011「角色未找到」或残缺数据，
+    // 表现为缺 head.acntCamp），跟「玩家没落全」是同一类问题 —— 都要等，不能直接放弃。
+    // 实测：推送在开局结束那一刻触发，第一次查几乎必空。
+    if (!detail) {
+      if (attempt >= waitComplete) return null
+      logger.debug(`[战绩详情] ${battle?.gameSeq} 详情还没落库，${gapMs}ms 后重试（第 ${attempt + 1} 次）`)
+      await new Promise(resolve => setTimeout(resolve, gapMs))
+      continue
+    }
 
     if (attempt >= waitComplete || isRolesComplete(detail)) {
       if (attempt > 0) {
@@ -249,7 +258,9 @@ async function fetchBattleDetailOnce (ID, battle, requesterBotUserId) {
   }
 
   if (!detail?.head?.acntCamp) {
-    logger.error('[战绩详情] 战斗详情数据不完整，缺少acntCamp字段')
+    // 刚打完的一两秒内服务端详情还没落库，是预期内的瞬时状态，交给上层重试；
+    // 用 debug 而不是 error，免得每次推送都刷一条吓人的错误。
+    logger.debug('[战绩详情] 战斗详情还没落库（缺 acntCamp），稍后重试')
     return null
   }
 
