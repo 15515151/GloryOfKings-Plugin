@@ -20,11 +20,13 @@ export function buildMasterPanelData() {
   const sharedAccounts = accounts.filter(account => account.shared && !account.isGlobalDefault)
   const invalidAccounts = accounts.filter(account => account.authInvalid)
   const usableAccounts = accounts.filter(account => !account.authInvalid)
-  const globalPrimary = globalAccounts[0] || null
+  const usableGlobals = globalAccounts.filter(account => !account.authInvalid)
+  // 多个全局账号 = 轮询池，请求在它们之间轮换（见 authStore.getAuthCandidates）
+  const globalRotating = usableGlobals.length > 1
   const enableAccountPool = authConfig.enableAccountPool !== false
   const allowPersonalAuthFallback = authConfig.allowPersonalAuthFallback === true
 
-  const candidateOrder = ['默认全局账号']
+  const candidateOrder = [globalRotating ? `全局账号（${usableGlobals.length} 个轮询）` : '默认全局账号']
   if (enableAccountPool) {
     candidateOrder.push('共享账号')
   }
@@ -54,14 +56,14 @@ export function buildMasterPanelData() {
         tone: 'neutral'
       },
       {
-        label: '默认全局账号',
-        value: globalPrimary
-          ? `${maskId(globalPrimary.userId)} / ${globalPrimary.authInvalid ? '失效' : '正常'}`
+        label: globalRotating ? '全局账号池' : '默认全局账号',
+        value: globalAccounts.length
+          ? globalAccounts.map(account => `${maskId(account.userId)} / ${account.authInvalid ? '失效' : '正常'}`).join('、')
           : '未配置',
-        desc: '配置指令：#营地wx全局登录 / #营地QQ全局登录 (刷新全局鉴权)',
-        tone: globalPrimary
-          ? (globalPrimary.authInvalid ? 'off' : 'on')
-          : 'warn'
+        desc: globalRotating
+          ? `共 ${usableGlobals.length} 个可用，请求在其间轮换`
+          : '配置指令：#营地wx全局登录 / #营地QQ全局登录 (刷新全局鉴权)',
+        tone: usableGlobals.length ? 'on' : (globalAccounts.length ? 'off' : 'warn')
       }
     ],
     summaryRows: [
@@ -82,8 +84,8 @@ export function buildMasterPanelData() {
       {
         title: '账号与更新',
         items: [
-          { command: '#营地wx全局登录', desc: '刷新默认全局账号鉴权' },
-          { command: '#营地QQ全局登录', desc: 'QQ 扫码刷新默认全局账号鉴权' },
+          { command: '#营地wx全局登录', desc: '扫码写入/更新全局账号（可多个，自动轮询）' },
+          { command: '#营地QQ全局登录', desc: 'QQ 扫码写入/更新全局账号（可多个，自动轮询）' },
           { command: '#王者设置共享账号候选启用|关闭', desc: '切换共享账号候选' },
           { command: '#王者设置个人登录态兜底启用|关闭', desc: '切换个人登录态兜底' },
           { command: '#共享营地账号 [ID]', desc: '将账号放入共享池' },

@@ -63,7 +63,7 @@ import { fetchBattleDetail, renderBattleDetail } from '../utils/battleDetailImag
 import { fetchRoleNames } from '../utils/roleName.js'
 import { getAllBindings } from '../utils/rankStore.js'
 import { membersOfGroup, groupsOfMember, isIndexReady, getGroupIndex, refreshGroupIndex } from '../utils/groupIndex.js'
-import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser, ApiService } from '#utils'
+import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser, ApiService, isProfileHidden } from '#utils'
 import { Config } from '#components'
 
 /**
@@ -93,6 +93,18 @@ const MAX_REQUESTS_PER_ROUND = 6
 const RECOVER_PROBE_ROUNDS = 3
 
 /**
+ * 命中频控后的安静期：这段时间内轮询整轮不发请求（连探测都不探）。
+ *
+ * 实测（2026-09-13）：营地对「刚被限流又立刻回来」有惩罚续期——冷却一过就打，
+ * 每 10 分钟必中一发 -30107，连续十几轮下不来。api 层的首次冷却只有 60 秒，
+ * 单靠它挡不住这种「掐着秒表回去试」，所以在轮询这侧再加一段更长的整体闭嘴，
+ * 让惩罚期真正过去。
+ *
+ * 安静期结束后不直接恢复满速，先按 RECOVER_PROBE_ROUNDS 每轮只探一个。
+ */
+const RATE_LIMIT_QUIET_MS = 15 * 60 * 1000
+
+/**
  * 影子订阅（只给 #谁在打游戏 采集、不往任何群播报）的退避封顶倍数，
  * 在 idleBackoffMax 之上再乘这一档：它一个群都不推，晚半小时知道某人还在离线没有代价，
  * 而正式订阅晚一个封顶间隔才播上线就不像话了。活跃时两条路径都立刻回到高频，
@@ -109,6 +121,9 @@ let cursor = 0
 
 /** 频控恢复期还剩几轮，> 0 时每轮只放一个请求探路 */
 let recoverRounds = 0
+
+/** 命中频控后的安静期截止时刻（ms），0 = 不在安静期 */
+let quietUntil = 0
 
 export class GameRecordPush extends plugin {
   constructor () {
@@ -623,15 +638,21 @@ export class GameRecordPush extends plugin {
       return
     }
 
-    // 频控冷却期整轮跳过。冷却期内每个订阅都会被 api 层快速失败，一个请求都发不出去，
-    // 却要挨个抛错、挨个写一遍订阅表（20 个订阅就是 20 次 YAML 读改写）；
-    // 更要紧的是不要去撩它——冷却一过就齐发一轮，正是下一个冷却的开始。
-    if (ApiService.isRateLimited()) {
-      logger.debug(`[王者推送] 营地频控冷却中（约 ${Math.ceil(ApiService.rateLimitRemainingMs() / 1000)} 秒），本轮 ${entries.length} 个订阅都不查`)
+    // 频控期间整轮跳过。池里账号全在冷却时，每个订阅都会被 api 层挡回来，
+    // 一个真请求都发不出去，却要挨个抛错、挨个写一遍订阅表（20 个订阅就是 20 次 YAML 读改写）。
+    // 命中过一次之后再叠一段安静期，理由见 RATE_LIMIT_QUIET_MS。
+    if (ApiService.hasNoAvailableAccount()) {
+      logger.debug(`[王者推送] 账号池全在频控冷却里，本轮 ${entries.length} 个订阅都不查`)
+      return
+    }
+
+    if (Date.now() < quietUntil) {
+      logger.debug(`[王者推送] 频控安静期内（还剩 ${Math.ceil((quietUntil - Date.now()) / 1000)} 秒），本轮 ${entries.length} 个订阅都不查`)
       return
     }
 
     running = true
+    const roundStart = Date.now()
     const heroMap = await getHeroNameMap()
     // 恢复期每轮只放一个请求：冷却刚过时营地多半还在惩罚期内，发满预算等于立刻再吃一发
     const budget = recoverRounds > 0 ? 1 : MAX_REQUESTS_PER_ROUND
@@ -667,7 +688,7 @@ export class GameRecordPush extends plugin {
         sent += 1
 
         // 这一发已经撞上频控：剩下的订阅一个都别试了，留到下一轮
-        if (ApiService.isRateLimited()) {
+        if (ApiService.lastRateLimitAt() > roundStart) {
           logger.warn(`[王者推送] 本轮命中营地频控，还剩 ${total - i - 1} 个订阅留到下一轮`)
           next = (idx + 1) % total
           break
@@ -678,10 +699,11 @@ export class GameRecordPush extends plugin {
     } finally {
       running = false
       cursor = next === '' ? 0 : next
-      // 命中就一直探（探测期会自己延长到营地真放行为止）；没命中才把恢复期倒数掉
-      if (ApiService.isRateLimited()) {
+      // 命中就闭嘴一段时间再探（探测期会自己延长到营地真放行为止）；没命中才把恢复期倒数掉
+      if (ApiService.lastRateLimitAt() > roundStart) {
+        quietUntil = Date.now() + RATE_LIMIT_QUIET_MS
         recoverRounds = RECOVER_PROBE_ROUNDS
-        logger.warn(`[王者推送] 进入频控恢复期：接下来 ${RECOVER_PROBE_ROUNDS} 轮每轮只查一个订阅`)
+        logger.warn(`[王者推送] 命中营地频控：安静 ${Math.round(RATE_LIMIT_QUIET_MS / 60000)} 分钟，之后 ${RECOVER_PROBE_ROUNDS} 轮每轮只探一个订阅`)
       } else if (recoverRounds > 0) {
         recoverRounds -= 1
       }
@@ -709,6 +731,14 @@ export class GameRecordPush extends plugin {
     const campId = getCurrentId(qq)
     if (!campId) {
       logger.debug(`[王者推送] ${qq} 已解绑营地ID，跳过`)
+      return
+    }
+
+    // 这个号的玩家隐藏了主页：24 小时内主动取数一律跳过（见 utils/hiddenProfiles.js）。
+    // 不发请求，state/data 保持 null，效果等同于「这轮什么都没拿到」，
+    // 但省掉一个注定返回 -10107 的请求。
+    if (isProfileHidden(campId)) {
+      logger.debug(`[王者推送] ${qq} 的营地 ${campId} 已标注隐藏主页，本轮跳过`)
       return
     }
 

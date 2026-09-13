@@ -65,7 +65,12 @@ function readYamlSafe(filePath, fallback = {}) {
   }
 }
 
-function isUsableAuth(auth) {
+/**
+ * 这份登录态有没有资格发请求（token / userId / 密钥三样齐）。
+ * 导出给 api.js 用：它判「池里还有没有能用的账号」时要和选候选同一套判据，
+ * 两边各写一份迟早漂移。
+ */
+export function isUsableAuth(auth) {
   return Boolean(auth?.token && auth?.userId && (auth?.userKey || auth?.encodeRes))
 }
 
@@ -97,6 +102,30 @@ class AuthStore {
 
   #getDefaultUserData() {
     return {}
+  }
+
+  /**
+   * 全局账号轮询游标。只活在进程内存里，重启后从优先级最高的号重新开始。
+   *
+   * 关键约束：**只有全局账号多于一个时它才会被推进**（见 #rotateGlobals 的调用点），
+   * 所以单账号场景下它恒为 0，候选顺序与引入轮询之前逐字节一致。
+   */
+  #globalCursor = 0
+
+  /**
+   * 把本轮该用的全局账号转到队首，其余按原优先级跟在其后，并推进游标。
+   *
+   * 是「旋转」而不是「只返回一个」：轮到的号万一失效，调用方（api.js 的候选循环）
+   * 还能顺着后面的号继续回退，现有的 failover 能力原样保留。
+   */
+  #rotateGlobals(accounts = []) {
+    if (accounts.length <= 1) {
+      return accounts
+    }
+
+    const offset = this.#globalCursor % accounts.length
+    this.#globalCursor = (offset + 1) % accounts.length
+    return [...accounts.slice(offset), ...accounts.slice(0, offset)]
   }
 
   #sortAccountsByPriority(accounts = []) {
@@ -260,20 +289,8 @@ class AuthStore {
 
     pool.accounts[userId] = next
 
-    if (next.isGlobalDefault) {
-      for (const [accountUserId, accountItem] of Object.entries(pool.accounts)) {
-        if (accountUserId === userId) {
-          continue
-        }
-
-        if (accountItem.isGlobalDefault) {
-          pool.accounts[accountUserId] = this.#normalizeAccount({
-            ...accountItem,
-            isGlobalDefault: false
-          }, accountItem)
-        }
-      }
-    }
+    // 刻意不再「一山不容二虎」地清掉其他全局账号：全局账号现在是一个轮询池
+    // （见 getAuthCandidates 里的 #rotateGlobals），扫码登记第二个号不该把第一个顶掉。
 
     if (next.shared) {
       if (!pool.sharedIds.includes(userId)) {
@@ -412,6 +429,12 @@ class AuthStore {
     return this.getGlobalAccount()?.userId || ''
   }
 
+  /**
+   * 把一个账号登记进全局账号池。
+   *
+   * 全局账号可以有多个（微信/QQ 扫出来的都行），请求会在它们之间轮换，
+   * 所以这里是「加入」而不是「替换唯一的那一个」——扫码登记第二个号不该顶掉第一个。
+   */
   upsertGlobalAccount(account = {}) {
     const next = this.upsertAccount({
       ...account,
@@ -420,7 +443,7 @@ class AuthStore {
       resetAuthState: true
     })
 
-    logger.info('[营地全局账号] 已更新默认全局账号配置', {
+    logger.info('[营地全局账号] 已更新全局账号池配置', {
       userId: next.userId,
       token: maskValue(next.token),
       userKey: maskValue(next.userKey),
@@ -595,7 +618,9 @@ class AuthStore {
       const globalAccounts = this.#sortAccountsByPriority(
         Object.values(pool.accounts).filter(account => account.isGlobalDefault)
       )
-      for (const globalAccount of globalAccounts) {
+      // 多个全局账号时轮换：每次调用（≈ 每次 HTTP 请求）把下一个号转到队首。
+      // 单账号时 #rotateGlobals 原样返回，顺序与引入轮询之前一致。
+      for (const globalAccount of this.#rotateGlobals(globalAccounts)) {
         pushCandidate(globalAccount, 'global', `全局账号 ${globalAccount.userId}`)
       }
     }
@@ -671,7 +696,6 @@ class AuthStore {
     const nextAccounts = {}
     const nextSharedIds = []
     const normalizedSharedIds = new Set((sharedIds || []).map(normalizeUserId).filter(Boolean))
-    let selectedGlobalAccountId = ''
 
     for (const item of accounts) {
       const userId = normalizeUserId(item.userId)
@@ -680,11 +704,9 @@ class AuthStore {
       }
 
       const existing = pool.accounts[userId] || {}
-      const isRequestedGlobal = Boolean(item.isGlobalDefault)
-      const isGlobalDefault = isRequestedGlobal && (!selectedGlobalAccountId || selectedGlobalAccountId === userId)
-      if (isGlobalDefault) {
-        selectedGlobalAccountId = userId
-      }
+      // 多个全局账号是合法的：它们构成轮询池，请求在它们之间轮换（见 getAuthCandidates
+      // 里的 #rotateGlobals）。所以这里不再做「只认第一个」的唯一化。
+      const isGlobalDefault = Boolean(item.isGlobalDefault)
       const next = this.#normalizeAccount({
         ...existing,
         userId,

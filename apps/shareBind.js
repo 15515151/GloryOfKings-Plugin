@@ -49,7 +49,9 @@ export class ShareBind extends plugin {
         { reg: '^#接入营地共享库$', fnc: 'masterEnable', permission: 'master' },
         { reg: '^#关闭营地共享库$', fnc: 'masterDisable', permission: 'master' },
         { reg: '^#营地共享库地址\\s*(\\S+)$', fnc: 'setUrl', permission: 'master' },
-        { reg: '^#营地共享库令牌\\s*(\\S+)$', fnc: 'setToken', permission: 'master' }
+        { reg: '^#营地共享库令牌\\s*(\\S+)$', fnc: 'setToken', permission: 'master' },
+        // 远程管理的钥匙：库跑在别的机器/Docker 上时，签令牌/看接入方/吊销全靠它
+        { reg: '^#营地共享库管理密钥\\s*(\\S+)$', fnc: 'setAdminSecret', permission: 'master' }
       ]
     })
   }
@@ -158,7 +160,8 @@ export class ShareBind extends plugin {
       '🗂 营地共享库',
       `接入状态：${ready ? '已接入' : '未接入'}${cfg.enabled && !ready ? '（开关开着但配置不全）' : ''}`,
       `地址：${cfg.apiUrl || '未填'}`,
-      `令牌：${maskToken(cfg.token)}`
+      `令牌：${maskToken(cfg.token)}`,
+      `远程管理：${cfg.adminSecret ? `已配（${maskToken(cfg.adminSecret)}）` : '未配'}`
     ]
 
     if (ready) {
@@ -179,7 +182,10 @@ export class ShareBind extends plugin {
       '#营地共享库接入方          看谁在用你的库',
       '#营地共享库发令牌 <备注>    给别人的机器人签一个（@一下群友就直接私聊给 TA）',
       '#营地共享库吊销 <序号>      踢掉某个接入方',
-      '#营地共享库卸载            停掉服务（密钥和数据保留）'
+      '#营地共享库卸载            停掉服务（密钥和数据保留）',
+      '',
+      '库搭在别的机器/Docker 上？接入之后发 #营地共享库管理密钥 <GOK_ADMIN_SECRET>，',
+      '上面发令牌/接入方/吊销几条照样能用（远程管理）'
     )
 
     return e.reply(lines.join('\n'), shouldQuote())
@@ -248,5 +254,38 @@ export class ShareBind extends plugin {
     Config.modify('config', 'shareToken', token)
     // 回显打码：这条指令可能在群里发，令牌不该贴在群聊记录里
     return e.reply(`已设置令牌：${maskToken(token)}\n接着发 #接入营地共享库 试连一次`, shouldQuote())
+  }
+
+  /**
+   * 远程共享库的管理密钥（服务端 .env 里的 GOK_ADMIN_SECRET）。
+   *
+   * 有了它 + 已接入的地址，发令牌 / 接入方 / 吊销这些主人侧运维指令就能管跑在
+   * 别的机器或 Docker 上的库 —— 不然那些指令只认本机部署。
+   *
+   * 这密钥权限比接入令牌大得多（能签发、能吊销、能删任何人的共享记录），
+   * 所以**只收私聊**：群聊记录里留着它是不可接受的风险。
+   */
+  async setAdminSecret (e) {
+    if (e.isGroup) {
+      return e.reply('管理密钥权限太大，别发在群里 —— 私聊我再说一次这条指令', shouldQuote())
+    }
+
+    const secret = String(e.msg.match(/^#营地共享库管理密钥\s*(\S+)$/)?.[1] || '').trim()
+
+    // 服务端生成密钥时强制 ≥32 字符，短了必是抄错了
+    if (secret.length < 32) {
+      return e.reply(
+        `密钥看着不对（${secret.length} 个字符，正常是 64 个十六进制位）。` +
+        '去服务端机器上看 .env 里的 GOK_ADMIN_SECRET，整段复制过来',
+        shouldQuote()
+      )
+    }
+
+    Config.modify('config', 'shareAdminSecret', secret)
+    return e.reply(
+      `已设置远程管理密钥：${maskToken(secret)}\n` +
+      '之后 #营地共享库发令牌 / #营地共享库接入方 / #营地共享库吊销 就直接管你接入的那个库了',
+      shouldQuote()
+    )
   }
 }

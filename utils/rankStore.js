@@ -20,6 +20,7 @@ import { quarantineCorrupt } from './safeStore.js'
 import { readYamlFile } from './yamlUtils.js'
 import { isBlackUser } from './blackList.js'
 import ApiService from './api.js'
+import { isProfileHidden } from './hiddenProfiles.js'
 import { PluginData } from '#components'
 
 const SNAPSHOT_FILE = path.join(PluginData, 'RankSnapshot.json')
@@ -28,24 +29,13 @@ const USER_DATA_FILE = path.join(PluginData, 'UserData.yaml')
 /** 快照有效期，12 小时。过期后下次查榜才会重新拉取，想立刻更新用「#排位排名刷新」 */
 export const SNAPSHOT_TTL = 12 * 60 * 60 * 1000
 
-/**
- * 命中 -30107 时的退避重试次数与基础等待。
- *
- * 这里不再自己 sleep 错峰：营地对 profile 接口有频控（并发拉取时大量返回 -30107），
- * 但错峰现在由 api.js 的全局队列统一做，相邻两次真实请求间隔 MIN_REQUEST_GAP_MS(1200ms)。
- * 早先这里每个账号还额外 sleep 600ms，那 600ms 完全被 1200ms 的队列间隔吃掉
- * （队列本来就要等到 1200ms 才放行），纯粹是白等——22 个账号一轮要多花 13 秒。
- * 想调整刷榜节奏改 api.js 的 MIN_REQUEST_GAP_MS，别在这里加 sleep。
- */
-const RATE_LIMIT_RETRY = 2
-const RATE_LIMIT_BACKOFF = 3000
-
-/** 营地频控错误码 */
-const CODE_RATE_LIMITED = -30107
 /** 对方隐藏了主页，这类账号永远进不了榜，不必重试 */
 const CODE_PROFILE_HIDDEN = -10107
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+// 刷榜节奏由 api.js 的全局队列统一控制（MIN_REQUEST_GAP_MS，相邻两次真实请求 1200ms），
+// 这里不再自己 sleep 错峰。早先每个账号还额外 sleep 600ms，那 600ms 完全被 1200ms 的
+// 队列间隔吃掉（队列本来就要等到 1200ms 才放行），纯粹白等——22 个账号一轮多花 13 秒。
+// 想调整节奏改 api.js 的 MIN_REQUEST_GAP_MS。
 
 /**
  * 不可见字符：C0/C1 控制符（含 DELETE U+007F，实测营地昵称里带过）、
@@ -277,6 +267,13 @@ export async function collectRankData({ force = false, ttl = SNAPSHOT_TTL } = {}
   let hidden = 0
 
   for (const [campId, botUserId] of targets) {
+    // 隐藏了主页的号：24 小时内不再主动查（见 utils/hiddenProfiles.js），
+    // 沿用上一次快照里的数据——和「采集失败」走同一条路
+    if (isProfileHidden(campId)) {
+      keepOld(entries, snapshot, campId)
+      continue
+    }
+
     const info = await fetchOne(campId, botUserId)
 
     if (info === CODE_PROFILE_HIDDEN) {
@@ -299,41 +296,31 @@ export async function collectRankData({ force = false, ttl = SNAPSHOT_TTL } = {}
 
 /**
  * 拉取单个账号的排名数据。
+ *
+ * 频控（-30107）不在这里处理：api.js 会按账号冷却并自动换号，只有全池都限流时才抛错，
+ * 落到下面的 catch 跳过这个账号——下一次刷榜自然会重试。
+ *
  * @returns 成功返回数据对象；隐藏主页返回 CODE_PROFILE_HIDDEN；其它失败返回 null
  */
 async function fetchOne(campId, botUserId) {
-  for (let attempt = 0; attempt <= RATE_LIMIT_RETRY; attempt += 1) {
-    try {
-      const profileData = await ApiService.getProfile(campId, botUserId)
-      const code = Number(profileData?.returnCode || 0)
+  try {
+    const profileData = await ApiService.getProfile(campId, botUserId)
+    const code = Number(profileData?.returnCode || 0)
 
-      if (code === CODE_PROFILE_HIDDEN) {
-        return CODE_PROFILE_HIDDEN
-      }
+    if (code === CODE_PROFILE_HIDDEN) {
+      return CODE_PROFILE_HIDDEN
+    }
 
-      // 频控：退避后重试，等待时间随次数递增
-      if (code === CODE_RATE_LIMITED) {
-        if (attempt < RATE_LIMIT_RETRY) {
-          await sleep(RATE_LIMIT_BACKOFF * (attempt + 1))
-          continue
-        }
-        logger.debug(`[王者排名] ${campId} 多次触发频控，已跳过`)
-        return null
-      }
-
-      if (code !== 0) {
-        logger.debug(`[王者排名] ${campId} 返回异常码 ${code}: ${profileData?.returnMsg || ''}`)
-        return null
-      }
-
-      return extractRankInfo(profileData)
-    } catch (error) {
-      logger.debug(`[王者排名] 采集 ${campId} 失败: ${error.message}`)
+    if (code !== 0) {
+      logger.debug(`[王者排名] ${campId} 返回异常码 ${code}: ${profileData?.returnMsg || ''}`)
       return null
     }
-  }
 
-  return null
+    return extractRankInfo(profileData)
+  } catch (error) {
+    logger.debug(`[王者排名] 采集 ${campId} 失败: ${error.message}`)
+    return null
+  }
 }
 
 /** 采集失败时沿用上一次快照里的数据，避免榜单突然少人 */

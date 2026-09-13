@@ -135,7 +135,7 @@ function warnOnce (key, message) {
 /**
  * 读共享库相关的配置。每次现读，这样锅巴里改了立刻生效（Config 有文件监听会清缓存）。
  *
- * @returns {{enabled: boolean, apiUrl: string, token: string}}
+ * @returns {{enabled: boolean, apiUrl: string, token: string, adminSecret: string}}
  */
 export function readShareConfig () {
   try {
@@ -143,10 +143,13 @@ export function readShareConfig () {
     return {
       enabled: cfg.shareEnabled === true,
       apiUrl: String(cfg.shareApiUrl || '').trim().replace(/\/+$/, ''),
-      token: String(cfg.shareToken || '').trim()
+      token: String(cfg.shareToken || '').trim(),
+      // 远程管理用的钥匙（服务端 GOK_ADMIN_SECRET）。只有运维指令用它，
+      // 和接入用的 token 是两码事，缺了只影响发令牌那些，不影响接入
+      adminSecret: String(cfg.shareAdminSecret || '').trim()
     }
   } catch {
-    return { enabled: false, apiUrl: '', token: '' }
+    return { enabled: false, apiUrl: '', token: '', adminSecret: '' }
   }
 }
 

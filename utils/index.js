@@ -15,6 +15,14 @@ import {
 } from './yamlUtils.js'
 import cache from './cache.js'
 import authStore from './authStore.js'
+import {
+  isProfileHidden,
+  markProfileHidden,
+  listHiddenProfiles,
+  clearHiddenProfile,
+  clearAllHiddenProfiles,
+  HIDDEN_TTL_MS
+} from './hiddenProfiles.js'
 import { getUserAvatar, getGroupAvatar, qlogoUrl, groupQlogoUrl, isQQNumber } from './avatar.js'
 import { normalizeId, pickGroupSafe, pickMemberSafe, resolveMemberName } from './adapter.js'
 import { AT_HEAD, AT_TAIL, pickAtText, stripAtText, resolveTargetUserId } from './atTarget.js'
@@ -54,6 +62,12 @@ export {
   writeYamlFile,
   cache,
   authStore,
+  isProfileHidden,
+  markProfileHidden,
+  listHiddenProfiles,
+  clearHiddenProfile,
+  clearAllHiddenProfiles,
+  HIDDEN_TTL_MS,
   getUserAvatar,
   getGroupAvatar,
   qlogoUrl,

@@ -97,6 +97,18 @@ export function supportGuoba () {
           }
         },
         {
+          field: 'config.shareAdminSecret',
+          label: '共享库管理密钥（远程管理）',
+          bottomHelpMessage:
+            '服务端 .env 里的 GOK_ADMIN_SECRET。库跑在别的机器或 Docker 上时，' +
+            '配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库；本机部署用不到（插件自己读 .env）。' +
+            '这个密钥能签发、吊销令牌，权限很大，别往群里贴。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '64 位十六进制（openssl rand -hex 32 生成）'
+          }
+        },
+        {
           field: 'config.battleResultCron',
           label: '推送检查间隔',
           bottomHelpMessage: '战绩推送、开局提醒、上下线提醒共用这一个轮询，这里定的是「最快多久看一次」。每个订阅串行拉接口（间隔 800 毫秒）；真打完一局时会再拉一次详情并渲染图（约 1.3 秒）。玩家离线时实际间隔会按下面的退避倍数自动拉长，不会一直按这个频率打接口。设太短仍会触发营地频控 -30107，不建议低于 2 分钟。',
@@ -248,14 +260,14 @@ export function supportGuoba () {
           field: 'auth.enableAccountPool',
           label: '启用共享账号候选',
           helpMessage: '命令：#王者设置共享账号候选启用 / #王者设置共享账号候选关闭',
-          bottomHelpMessage: '默认关闭。关闭时只使用账号列表中的默认全局账号；开启后才会在默认全局账号之后继续尝试共享账号。个人登录态不会默认参与，只有同时开启“个人登录态兜底”时才会作为最后候选。',
+          bottomHelpMessage: '默认关闭。关闭时只用全局账号（可以有多个，请求在它们之间轮询）；开启后才会在全局账号之后继续尝试共享账号。个人登录态不会默认参与，只有同时开启“个人登录态兜底”时才会作为最后候选。',
           component: 'Switch'
         },
         {
           field: 'auth.allowPersonalAuthFallback',
           label: '允许个人登录态兜底',
           helpMessage: '命令：#王者设置个人登录态兜底启用 / #王者设置个人登录态兜底关闭',
-          bottomHelpMessage: '默认关闭。开启后会在默认全局账号和共享账号都不可用时，最后再尝试当前 QQ 自己保存的登录态。若“共享账号候选”为关闭状态，则该兜底链路不会实际参与请求。',
+          bottomHelpMessage: '默认关闭。开启后会在全局账号和共享账号都不可用时，最后再尝试当前 QQ 自己保存的登录态。若“共享账号候选”为关闭状态，则该兜底链路不会实际参与请求。',
           component: 'Switch'
         },
         {
@@ -323,7 +335,7 @@ export function supportGuoba () {
           field: 'authPool.accounts',
           label: `营地账号列表（共 ${authPoolAccounts.length} 个，可用 ${usableCount} 个，失效 ${invalidCount} 个）`,
           helpMessage: '管理 AuthPool.json 中的完整账号信息。字段名已尽量按实际代码名标注；手动录入时，至少需要 userId、token、userKey 这三个核心字段。',
-          bottomHelpMessage: '删除条目会从账号池移除该账号；敏感字段支持直接编辑；默认全局账号、共享账号和优先级都直接在这里维护。未开启“共享账号候选”时，请求只使用默认全局账号；私人账号仅允许 ownerBotUserId 对应的 QQ 用户在开启个人兜底时使用。',
+          bottomHelpMessage: '删除条目会从账号池移除该账号；敏感字段支持直接编辑；全局账号、共享账号和优先级都直接在这里维护（“全局账号”可以勾选多个，请求会在它们之间轮询）。未开启“共享账号候选”时，请求只使用全局账号；私人账号仅允许 ownerBotUserId 对应的 QQ 用户在开启个人兜底时使用。',
           component: 'GSubForm',
           componentProps: {
             multiple: true,
@@ -362,7 +374,7 @@ export function supportGuoba () {
               },
               {
                 field: 'isGlobalDefault',
-                label: '全局账号',
+                label: '全局账号（可多选，自动轮询）',
                 component: 'Switch'
               },
               {

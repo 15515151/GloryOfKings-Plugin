@@ -153,20 +153,17 @@ export function pm2Proc (name) {
  * 所以要看它跑的是不是我们 server 目录下的入口，cwd 和脚本路径任一命中才算。
  * （这个教训是从 meme 插件的卸载逻辑里带过来的。）
  *
- * 服务端分离到独立目录后有两个合法位置：现在的 `<云崽根>/gok-share-server/`
- * 和老版本的插件 `server/`，传数组两个都认（单数照样收）。
- *
  * @param {object|null} proc pm2Proc 的返回值
- * @param {string|string[]} serverDir 服务端目录绝对路径，新旧位置可以一起传
+ * @param {string} serverDir 服务端目录绝对路径
  */
 export function isOurProcess (proc, serverDir) {
   if (!proc) return false
 
   const norm = p => String(p || '').replace(/\\/g, '/').toLowerCase()
-  const wants = (Array.isArray(serverDir) ? serverDir : [serverDir]).map(norm)
+  const want = norm(serverDir)
 
   const cwd = norm(proc.pm2_env?.pm_cwd || proc.pm2_env?.cwd)
   const script = norm(proc.pm2_env?.pm_exec_path)
 
-  return wants.some(want => cwd.startsWith(want) || script.startsWith(want))
+  return cwd.startsWith(want) || script.startsWith(want)
 }

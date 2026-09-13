@@ -16,6 +16,7 @@ import path from 'path'
 import { readJsonFile, writeJsonFile } from './fileUtils.js'
 import { quarantineCorrupt } from './safeStore.js'
 import ApiService from './api.js'
+import { isProfileHidden } from './hiddenProfiles.js'
 import { PluginData } from '#components'
 
 const ARCHIVE_FILE = path.join(PluginData, 'BattleArchive.json')
@@ -248,6 +249,13 @@ export async function collectBattles (campId, qq, fromSec, { maxPages = 12, toSe
   const key = String(campId || '')
   const from = toInt(fromSec)
   const to = toInt(toSec)
+
+  // 这个玩家隐藏了主页：24 小时内不再主动查（见 utils/hiddenProfiles.js）。
+  // 返回空区间而不是抛错——日报/周报/群报/趋势本来就按「这段没数据」处理，
+  // coveredFrom 给 0 也不会把调用方的「最差水位」拉低。
+  if (isProfileHidden(key)) {
+    return { battles: [], coveredFrom: 0, truncated: false, fetched: 0 }
+  }
   const inRange = list => list.filter(item => {
     const at = toInt(item?.dtEventTime)
     return at >= from && (to <= 0 || at <= to)

@@ -46,12 +46,6 @@ const PUSH_FILE = path.join(PluginData, 'GameRecordPush.yaml')
  */
 export const REQUEST_INTERVAL = 800
 
-/** 命中频控时的退避重试次数与基础等待，沿用 rankStore 的经验值 */
-const RATE_LIMIT_RETRY = 2
-const RATE_LIMIT_BACKOFF = 3000
-
-/** 营地频控错误码 */
-const CODE_RATE_LIMITED = -30107
 /** 对方隐藏了主页，这类账号永远拿不到战绩，不必重试 */
 const CODE_PROFILE_HIDDEN = -10107
 
@@ -561,56 +555,46 @@ export function streakMilestone (streak, notifiedKey = '', name = '') {
 /**
  * 拉取单个账号的最新战绩列表。
  * 形状照 rankStore.fetchOne：成功返回响应的 data，隐藏战绩返回 FETCH_HIDDEN，其它失败返回 null。
+ *
+ * 频控（-30107）不在这里处理：api.js 会按账号冷却并自动换号，只有全池都限流时才抛错，
+ * 落到下面的 catch 直接跳过本轮——下一次轮询自然会重试。
+ *
  * @param {string} campId 营地ID
  * @param {string} qq 属主QQ，必传——authStore 按属主取鉴权候选，传空会直接报「未找到登录态」
  */
 export async function fetchLatest (campId, qq) {
-  for (let attempt = 0; attempt <= RATE_LIMIT_RETRY; attempt += 1) {
-    try {
-      const res = await ApiService.getMoreBattleList(String(campId), String(qq), { option: 0, lastTime: 0 })
-      const code = Number(res?.returnCode || 0)
+  try {
+    const res = await ApiService.getMoreBattleList(String(campId), String(qq), { option: 0, lastTime: 0 })
+    const code = Number(res?.returnCode || 0)
 
-      if (code === CODE_PROFILE_HIDDEN) return FETCH_HIDDEN
+    if (code === CODE_PROFILE_HIDDEN) return FETCH_HIDDEN
 
-      // 频控：退避后重试，等待时间随次数递增
-      if (code === CODE_RATE_LIMITED) {
-        if (attempt < RATE_LIMIT_RETRY) {
-          await sleep(RATE_LIMIT_BACKOFF * (attempt + 1))
-          continue
-        }
-        logger.debug(`[王者推送] ${campId} 多次触发频控，本轮跳过`)
-        return null
-      }
-
-      if (code !== 0) {
-        logger.debug(`[王者推送] ${campId} 返回异常码 ${code}: ${res?.returnMsg || ''}`)
-        return null
-      }
-
-      // 隐藏战绩时 returnCode 是 0，靠 invisible 标记判断
-      if (res?.data?.invisible) return FETCH_HIDDEN
-
-      // 顺手归档，喂日报/周报。挂在这里而不是各调用方：轮询、#开启战绩推送 初始化游标、
-      // 日报补页全都走 fetchLatest，一处就覆盖所有入口。
-      // 玩家在线时轮询每 2 分钟拉一次第一页，这样数据是慢慢攒全的，日报周报读库就够，
-      // 不用为了「本周」现翻十几页（第二页起每页只有 10 场，详见 battleArchive 文件头）
-      if (res?.data?.list?.length) {
-        try {
-          archiveBattles(campId, res.data.list)
-        } catch (error) {
-          // 归档失败绝不能影响推送本身
-          logger.debug(`[王者推送] ${campId} 归档失败: ${error.message}`)
-        }
-      }
-
-      return res?.data || null
-    } catch (error) {
-      logger.debug(`[王者推送] 拉取 ${campId} 失败: ${error.message}`)
+    if (code !== 0) {
+      logger.debug(`[王者推送] ${campId} 返回异常码 ${code}: ${res?.returnMsg || ''}`)
       return null
     }
-  }
 
-  return null
+    // 隐藏战绩时 returnCode 是 0，靠 invisible 标记判断
+    if (res?.data?.invisible) return FETCH_HIDDEN
+
+    // 顺手归档，喂日报/周报。挂在这里而不是各调用方：轮询、#开启战绩推送 初始化游标、
+    // 日报补页全都走 fetchLatest，一处就覆盖所有入口。
+    // 玩家在线时轮询每 2 分钟拉一次第一页，这样数据是慢慢攒全的，日报周报读库就够，
+    // 不用为了「本周」现翻十几页（第二页起每页只有 10 场，详见 battleArchive 文件头）
+    if (res?.data?.list?.length) {
+      try {
+        archiveBattles(campId, res.data.list)
+      } catch (error) {
+        // 归档失败绝不能影响推送本身
+        logger.debug(`[王者推送] ${campId} 归档失败: ${error.message}`)
+      }
+    }
+
+    return res?.data || null
+  } catch (error) {
+    logger.debug(`[王者推送] 拉取 ${campId} 失败: ${error.message}`)
+    return null
+  }
 }
 
 /**
@@ -669,42 +653,31 @@ export async function getHeroNameMap () {
  * @returns {Promise<{gameOnline:number, onlineTime:number, offlineTime:number, roleName:string}|null|symbol>}
  */
 export async function fetchOnlineState (campId, qq) {
-  for (let attempt = 0; attempt <= RATE_LIMIT_RETRY; attempt += 1) {
-    try {
-      const res = await ApiService.getProfile(String(campId), String(qq))
-      const code = Number(res?.returnCode || 0)
+  try {
+    const res = await ApiService.getProfile(String(campId), String(qq))
+    const code = Number(res?.returnCode || 0)
 
-      if (code === CODE_PROFILE_HIDDEN) return FETCH_HIDDEN
+    if (code === CODE_PROFILE_HIDDEN) return FETCH_HIDDEN
 
-      if (code === CODE_RATE_LIMITED) {
-        if (attempt < RATE_LIMIT_RETRY) {
-          await sleep(RATE_LIMIT_BACKOFF * (attempt + 1))
-          continue
-        }
-        return null
-      }
+    if (code !== 0) return null
 
-      if (code !== 0) return null
+    const data = res?.data || {}
+    const roles = data.roleList || []
+    // 主角色认 targetRoleId，取不到就退回第一个（多角色账号只跟主角色的状态）
+    const role = roles.find(r => r.roleId === data.targetRoleId) || roles[0]
+    if (!role) return null
 
-      const data = res?.data || {}
-      const roles = data.roleList || []
-      // 主角色认 targetRoleId，取不到就退回第一个（多角色账号只跟主角色的状态）
-      const role = roles.find(r => r.roleId === data.targetRoleId) || roles[0]
-      if (!role) return null
-
-      return {
-        gameOnline: toInt(role.gameOnline),
-        onlineTime: toInt(role.onlineTime),
-        offlineTime: toInt(role.offlineTime),
-        roleName: String(role.roleName || '')
-      }
-    } catch (error) {
-      logger.debug(`[王者推送] 拉取 ${campId} 在线状态失败: ${error.message}`)
-      return null
+    return {
+      gameOnline: toInt(role.gameOnline),
+      onlineTime: toInt(role.onlineTime),
+      offlineTime: toInt(role.offlineTime),
+      roleName: String(role.roleName || '')
     }
+  } catch (error) {
+    // 频控同 fetchLatest：api.js 按账号冷却并换号，全池限流才抛到这里，跳过本轮即可
+    logger.debug(`[王者推送] 拉取 ${campId} 在线状态失败: ${error.message}`)
+    return null
   }
-
-  return null
 }
 
 /* ------------------------------------------------------------------ 纯计算 */
