@@ -1,5 +1,5 @@
 import path from 'path'
-import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache, querySharedBind } from '#utils'
+import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache, querySharedBind, listHiddenProfiles, clearHiddenProfile, clearAllHiddenProfiles } from '#utils'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { Config, PluginData, PluginPath } from '#components'
 import authStore from '../utils/authStore.js'
@@ -97,6 +97,16 @@ export class AccountManager extends plugin {
         {
           reg: '^#清理失效营地账号$',
           fnc: 'clearInvalidCampAuth',
+          permission: 'master'
+        },
+        {
+          reg: '^#隐藏主页名单$',
+          fnc: 'showHiddenProfiles',
+          permission: 'master'
+        },
+        {
+          reg: '^#清除隐藏主页\\s*(.*)$',
+          fnc: 'clearHiddenProfiles',
           permission: 'master'
         }
       ]
@@ -952,6 +962,74 @@ export class AccountManager extends plugin {
     }
 
     await e.reply(lines.filter(Boolean).join('\n'))
+    return true
+  }
+
+  /**
+   * #隐藏主页名单（主人）
+   *
+   * 列出被标注「隐藏了主页」的营地ID。这些号 24 小时内不会被主动查询
+   * （战绩推送轮询、排位刷榜、日报周报、群报），但用户点名查的指令不受影响。
+   */
+  async showHiddenProfiles (e) {
+    const list = listHiddenProfiles()
+
+    if (!list.length) {
+      await e.reply('当前没有被标注「隐藏了主页」的营地ID。', shouldQuote())
+      return true
+    }
+
+    const lines = list.map((item, index) => {
+      // 不足 1 小时也显示成 1，别出现「还有约 0 小时」
+      const hours = Math.max(1, Math.ceil(item.remainMs / 3600000))
+      const name = item.nickname ? ` ${item.nickname}` : ''
+      return `${index + 1}. ${item.campId}${name} —— 还有约 ${hours} 小时`
+    })
+
+    await e.reply([
+      `被标注「隐藏了主页」的营地ID（共 ${list.length} 个）：`,
+      ...lines,
+      '',
+      '这些号 24 小时内不会被主动查询：战绩推送轮询、排位刷榜、日报周报、群报。',
+      '用户点名查（#王者主页 / #查询战绩 等）不受影响。',
+      '清除：#清除隐藏主页 <营地ID>，或 #清除隐藏主页 all'
+    ].join('\n'), shouldQuote())
+    return true
+  }
+
+  /** #清除隐藏主页 <营地ID|all>（主人） */
+  async clearHiddenProfiles (e) {
+    const arg = String(e.msg || '').replace(/^#清除隐藏主页\s*/, '').trim()
+
+    if (!arg) {
+      await e.reply('用法：#清除隐藏主页 <营地ID>，或 #清除隐藏主页 all', shouldQuote())
+      return true
+    }
+
+    if (/^all$/i.test(arg)) {
+      const count = clearAllHiddenProfiles()
+      await e.reply(
+        count
+          ? `已清除全部 ${count} 条隐藏主页标注，下一次轮询会重新查询它们。`
+          : '当前没有标注可清除。',
+        shouldQuote()
+      )
+      return true
+    }
+
+    const campId = arg.replace(/[^\d]/g, '')
+    if (!campId) {
+      await e.reply('没认出营地ID（要纯数字），或用 all 清除全部。', shouldQuote())
+      return true
+    }
+
+    const removed = clearHiddenProfile(campId)
+    await e.reply(
+      removed
+        ? `已清除 ${campId} 的隐藏主页标注，下一次轮询会重新查询它。`
+        : `${campId} 不在标注名单里。`,
+      shouldQuote()
+    )
     return true
   }
 }

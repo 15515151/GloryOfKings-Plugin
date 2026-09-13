@@ -73,7 +73,12 @@ export class SeasonPage extends plugin {
 
     const roleId = profileData?.data?.targetRoleId
     if (!roleId) {
-      await e.reply('获取角色信息失败，请稍后再试')
+      // 主页被隐藏时 profileData.data 是空的，别一律回「获取角色信息失败」——
+      // 那会让人以为是插件坏了，其实对方只是关了主页
+      const hiddenScope = privacyScope(profileData?.returnCode)
+      await e.reply(hiddenScope
+        ? `对方隐藏了${hiddenScope}，${mode}表现查不到`
+        : '获取角色信息失败，请稍后再试')
       return
     }
 

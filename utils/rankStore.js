@@ -20,6 +20,7 @@ import { quarantineCorrupt } from './safeStore.js'
 import { readYamlFile } from './yamlUtils.js'
 import { isBlackUser } from './blackList.js'
 import ApiService from './api.js'
+import { isProfileHidden } from './hiddenProfiles.js'
 import { PluginData } from '#components'
 
 const SNAPSHOT_FILE = path.join(PluginData, 'RankSnapshot.json')
@@ -266,6 +267,13 @@ export async function collectRankData({ force = false, ttl = SNAPSHOT_TTL } = {}
   let hidden = 0
 
   for (const [campId, botUserId] of targets) {
+    // 隐藏了主页的号：24 小时内不再主动查（见 utils/hiddenProfiles.js），
+    // 沿用上一次快照里的数据——和「采集失败」走同一条路
+    if (isProfileHidden(campId)) {
+      keepOld(entries, snapshot, campId)
+      continue
+    }
+
     const info = await fetchOne(campId, botUserId)
 
     if (info === CODE_PROFILE_HIDDEN) {

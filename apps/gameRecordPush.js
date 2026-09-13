@@ -62,7 +62,7 @@ import { fetchBattleDetail, renderBattleDetail } from '../utils/battleDetailImag
 import { fetchRoleNames } from '../utils/roleName.js'
 import { getAllBindings } from '../utils/rankStore.js'
 import { membersOfGroup, groupsOfMember, isIndexReady, getGroupIndex, refreshGroupIndex } from '../utils/groupIndex.js'
-import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser } from '#utils'
+import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser, isProfileHidden } from '#utils'
 import { Config } from '#components'
 
 /**
@@ -629,6 +629,14 @@ export class GameRecordPush extends plugin {
     const campId = getCurrentId(qq)
     if (!campId) {
       logger.debug(`[王者推送] ${qq} 已解绑营地ID，跳过`)
+      return
+    }
+
+    // 这个号的玩家隐藏了主页：24 小时内主动取数一律跳过（见 utils/hiddenProfiles.js）。
+    // 不发请求，state/data 保持 null，效果等同于「这轮什么都没拿到」，
+    // 但省掉一个注定返回 -10107 的请求。
+    if (isProfileHidden(campId)) {
+      logger.debug(`[王者推送] ${qq} 的营地 ${campId} 已标注隐藏主页，本轮跳过`)
       return
     }
 

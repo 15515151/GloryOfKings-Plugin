@@ -2,6 +2,7 @@ import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { ApiService, readYamlFile, Button, parsePerfArgs, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import { PluginData, PluginPath } from '#components'
+import { privacyScope } from '../utils/seasonFallback.js'
 
 // 默认一屏放几个赛季总结。营地那边是全部赛季无限滚动，这里默认按 3 个赛季控制图片长度，
 // 指令后可跟数量（#全部排位表现5）或 all（#全部排位表现all）覆盖
@@ -71,7 +72,12 @@ export class AllSeasonPerformance extends plugin {
 
     const roleId = profileData?.data?.targetRoleId
     if (!roleId) {
-      await e.reply('获取角色信息失败，请稍后再试')
+      // 主页被隐藏时 profileData.data 是空的，别一律回「获取角色信息失败」——
+      // 那会让人以为是插件坏了，其实对方只是关了主页
+      const hiddenScope = privacyScope(profileData?.returnCode)
+      await e.reply(hiddenScope
+        ? `对方隐藏了${hiddenScope}，全部${mode}表现查不到`
+        : '获取角色信息失败，请稍后再试')
       return
     }
 

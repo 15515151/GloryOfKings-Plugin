@@ -3,11 +3,18 @@ import fetch from 'node-fetch'
 import { Config } from '#components'
 import { decrypt as xxteaDecrypt, encrypt as xxteaEncrypt } from './xxtea.js'
 import authStore from './authStore.js'
+import { markProfileHidden } from './hiddenProfiles.js'
 
 const DEFAULT_PUBLIC_KEY = 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC0h62mV/zjJtFsNdfFNlxksfUOpjDI2KCcBrPiA8T7szABT4InLDTrdXAW84QyGNiazB0i7pgPCNGSAYbiJrCRutZ5jQsVS0Wg/RnXfwVQDJcAHJDjP5IXyroeLX7NUxDai8nPcpfRsvq6sneobyPexZSH0TlVSnecsJZTj5wu/wIDAQAB'
 
 /** 营地频控错误码：操作频繁 */
 const CODE_RATE_LIMITED = -30107
+
+/** 对方隐藏了主页：数据永远拿不到，标注后 24 小时内不再主动查（见 utils/hiddenProfiles.js） */
+const CODE_PROFILE_HIDDEN = -10107
+
+/** 主页接口。只有它返回的 -10107 才代表「这个玩家隐藏了主页」 */
+const PROFILE_ENDPOINT = '/game/koh/profile'
 
 /**
  * 相邻两次真实 HTTP 请求的最小间隔。营地接口按请求方账号限频，
@@ -1117,9 +1124,18 @@ class ApiService {
           }
         }
 
-        // 业务错误码（主页隐藏 -10107 等）：账号本身没问题，换账号重试没有意义，
-        // 也不算「请求成功」。原样交给上层按 returnCode 自行分流
-        // （myKingHomepage 会对隐藏主页提示）。
+        // 主页被隐藏：把**被查的玩家**标注下来，24 小时内主动取数不再碰它
+        // （定时轮询 / 批量刷榜 / 群报都会先问 isProfileHidden，见 utils/hiddenProfiles.js）。
+        // 记在这里是为了覆盖所有入口，将来新增查询路径也不会漏。
+        //
+        // 只认 profile 端点：#makeAuthRequest 的 targetUserId 在别的接口上可能是角色ID
+        // （getFightData 传的就是 roleId），混进标注会污染。
+        if (businessCode === CODE_PROFILE_HIDDEN && endpoint === PROFILE_ENDPOINT) {
+          markProfileHidden(targetUserId)
+        }
+
+        // 其余业务错误码：账号本身没问题，换账号重试没有意义，也不算「请求成功」，
+        // 原样交给上层按 returnCode 自行分流（myKingHomepage 会对隐藏主页提示）。
         if (Number.isFinite(businessCode) && businessCode !== 0) {
           logger.warn(`[王者接口] ${candidate.label} 返回业务错误码 ${businessCode}: ${data.returnMsg || data.message || ''}`.trim(), {
             endpoint,
