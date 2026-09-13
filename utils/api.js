@@ -100,10 +100,23 @@ class ApiService {
    * 冷却本身是按账号记的，看它是看不出「现在还能不能用」的。
    */
   #lastRateLimitAt = 0
-  /** 全局串行队列的队尾 */
-  #queueTail = Promise.resolve()
-  /** 上次实际请求发出时刻 */
-  #lastRequestAt = 0
+  /**
+   * 账号 userId -> 该账号的队列尾。
+   *
+   * **按账号分队列，不是全局一条**：营地的限流是按账号记的（实测 2026-09-13，
+   * 同一个号怎么等都会被拒、换个号立刻通），所以「相邻两次请求至少隔
+   * MIN_REQUEST_GAP_MS」这条约束本就该按账号成立，而不是让池里所有号排同一条队。
+   * 分开之后多个全局账号的请求能真正并发，谁也不用替别人白等——
+   * #谁在打游戏 的现刷、排行榜那种十几连发，速度直接按账号数成倍。
+   */
+  #queueTailByUser = new Map()
+  /** 账号 userId -> 上次实际请求发出时刻 */
+  #lastRequestAtByUser = new Map()
+  /**
+   * 全局账号之间的轮询游标。多个全局账号时，请求挨个换号发（见 #rotateGlobals），
+   * 单号请求量降到 1/N，配合上面的分队列才谈得上并发。
+   */
+  #globalCursor = 0
 
   constructor() {
     this.baseUrls = {
@@ -202,7 +215,7 @@ class ApiService {
    */
   hasNoAvailableAccount() {
     const now = Date.now()
-    const usable = authStore.listAccounts().filter(account => !account?.authInvalid && isUsableAuth(account))
+    const usable = this.#usableAccounts()
     if (!usable.length) return false
 
     return usable.every(account =>
@@ -210,23 +223,45 @@ class ApiService {
   }
 
   /**
-   * 领一个发车名额：排到队尾，等够 MIN_REQUEST_GAP_MS 再放行。
-   * 排行榜批量刷新（19 连发）、推送轮询、用户查询同时到来时在这里自动错峰，
-   * 而不是叠着打同一个 token。
+   * 池里现在有几个能用的账号。
+   *
+   * 上层拿它估耗时（请求是**按账号并发**的，N 个号就是 N 路并行，
+   * 见 #acquireSlot），也用来判断「这次操作大概要等多久」。
+   * 判据和 hasNoAvailableAccount 同一份，别在调用方另写一套。
+   */
+  usableAccountCount() {
+    return this.#usableAccounts().length
+  }
+
+  /** 池里没被标记失效、且密钥齐全的账号 */
+  #usableAccounts() {
+    return authStore.listAccounts().filter(account => !account?.authInvalid && isUsableAuth(account))
+  }
+
+  /**
+   * 领一个发车名额：排到**这个账号**的队尾，等够 MIN_REQUEST_GAP_MS 再放行。
+   * 排行榜批量刷新、推送轮询、用户查询同时到来时在这里自动错峰，
+   * 而不是叠着打同一个 token；不同账号各排各的队，互不阻塞。
    *
    * 只管**发出节奏**，不等响应回来——响应时间不该算进间隔里，
    * 更不该让一个慢请求把后面所有人堵住。等响应、重试、换账号都在名额之外做。
+   *
+   * @param {object|null} auth 本次请求要用的账号，队列按它分；拿不到账号时退化成一条公共队列
    */
-  #acquireSlot() {
-    const slot = this.#queueTail.then(async () => {
-      const wait = this.#lastRequestAt + MIN_REQUEST_GAP_MS - Date.now()
+  #acquireSlot(auth) {
+    const key = this.#toString(auth?.userId) || '__unknown__'
+    const prev = this.#queueTailByUser.get(key) || Promise.resolve()
+
+    const slot = prev.then(async () => {
+      const last = this.#lastRequestAtByUser.get(key) || 0
+      const wait = last + MIN_REQUEST_GAP_MS - Date.now()
       if (wait > 0) {
         await new Promise(resolve => setTimeout(resolve, wait))
       }
-      this.#lastRequestAt = Date.now()
+      this.#lastRequestAtByUser.set(key, Date.now())
     })
 
-    this.#queueTail = slot.then(() => {}, () => {})
+    this.#queueTailByUser.set(key, slot.then(() => {}, () => {}))
     return slot
   }
 
@@ -250,7 +285,7 @@ class ApiService {
    * @returns {Promise<{response: Response, release: () => void}>}
    */
   async #gatedFetch(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS, auth = null) {
-    await this.#acquireSlot()
+    await this.#acquireSlot(auth)
     this.#assertNotRateLimited(auth)
 
     const controller = new AbortController()
@@ -547,19 +582,48 @@ class ApiService {
       auth: this.#buildAuthConfig(candidate.auth, baseAuth)
     }))
 
+    // 先轮转再打日志：日志要反映**这次实际会按什么顺序试**，打轮转前的顺序
+    // 会让人以为「每次都是同一个号打头」而去找轮询为什么没生效（实测踩过）。
+    const rotated = this.#rotateGlobals(mappedCandidates)
+
     logger.debug('[王者接口] 本次请求鉴权候选列表', {
       targetUserId: this.#toString(targetUserId),
       requesterBotUserId: this.#toString(requesterBotUserId),
       enableAccountPool: baseAuth.enableAccountPool,
       allowPersonalAuthFallback: baseAuth.allowPersonalAuthFallback,
-      candidates: mappedCandidates.map(candidate => this.#buildAuthDebugInfo(
+      candidates: rotated.map(candidate => this.#buildAuthDebugInfo(
         candidate.auth,
         candidate.source,
         candidate.label
       ))
     })
 
-    return mappedCandidates
+    return rotated
+  }
+
+  /**
+   * 把「全局账号」那一档按游标轮转一位，其余候选保持原序跟在后面。
+   *
+   * 池里有多个全局账号时，每个请求换一个号发：营地的限流按账号记，分摊之后
+   * 单个号的请求量降到 1/N，配合同样按账号分的请求队列，并发才真正跑得起来。
+   * 没有这一步的话候选永远从 priority 最高的那个开始试，等于所有请求都压在同一个号上，
+   * 队列分成几条也没用。
+   *
+   * **只有全局账号轮询**：共享账号 / 个人兜底仍是「前面的都不可用才轮到」的故障转移，
+   * 那个顺序有它自己的语义（见 utils/authStore.js 的 getAuthCandidates），别一起轮了。
+   *
+   * @param {Array<object>} candidates authStore 给的候选（已按 priority 排好）
+   * @returns {Array<object>} 轮转后的候选
+   */
+  #rotateGlobals(candidates) {
+    const globals = candidates.filter(candidate => candidate.source === 'global')
+    if (globals.length <= 1) return candidates
+
+    const rest = candidates.filter(candidate => candidate.source !== 'global')
+    const start = this.#globalCursor % globals.length
+    this.#globalCursor += 1
+
+    return [...globals.slice(start), ...globals.slice(0, start), ...rest]
   }
 
   #markCandidateAuthFailure(candidate, message = '') {
@@ -1709,4 +1773,26 @@ class ApiService {
   }
 }
 
-export default new ApiService()
+/** 单例。起个名字是因为下面 estimateRequestSeconds 要用它（default export 是匿名的） */
+const apiService = new ApiService()
+
+/**
+ * 估算「N 次请求大概要几秒」，给上层的「约需 XX 秒」提示用。
+ *
+ * **不能再用「次数 × MIN_REQUEST_GAP_MS」直接算**：请求是按账号并发跑的
+ * （`#acquireSlot` 按账号分队列、`#rotateGlobals` 把请求轮着分给不同的号），
+ * 4 个账号就是 4 路并行，照老算法会高估四倍，用户等 10 秒却被告知 40 秒。
+ *
+ * 用当前池里可用账号数折算，没有可用账号时按 1 路算（那种情况下请求本来就会失败，
+ * 提示保守一点没有坏处）。
+ *
+ * @param {number} count 预计要发的请求次数
+ * @returns {number} 秒数，至少 1
+ */
+export function estimateRequestSeconds (count) {
+  const times = Math.max(0, Number(count) || 0)
+  const workers = Math.max(1, apiService.usableAccountCount())
+  return Math.max(1, Math.ceil(times * MIN_REQUEST_GAP_MS / 1000 / workers))
+}
+
+export default apiService

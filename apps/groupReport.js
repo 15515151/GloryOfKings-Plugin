@@ -26,7 +26,7 @@ import {
   MAX_MEMBERS
 } from '../utils/groupReportStore.js'
 import { loadPushList, sleep, REQUEST_INTERVAL } from '../utils/pushStore.js'
-import { MIN_REQUEST_GAP_MS } from '../utils/api.js'
+import { estimateRequestSeconds } from '../utils/api.js'
 import { shouldQuote, Button, getGroupAvatar, pickGroupSafe } from '#utils'
 import { Config } from '#components'
 
@@ -103,8 +103,9 @@ export class GroupReport extends plugin {
       ], shouldQuote())
     }
 
-    // 每个号至少一次请求、全局队列 1.2 秒一发，人多就是几十秒，先给个回执
-    const seconds = Math.ceil(targets.length * MIN_REQUEST_GAP_MS / 1000)
+    // 每个号至少一次请求，人多就是几十秒，先给个回执。
+    // 秒数交给 estimateRequestSeconds 算：请求按账号并发，池里有几个号就快几倍
+    const seconds = estimateRequestSeconds(targets.length)
     await e.reply(
       `正在汇总本群 ${targets.length} 个账号的${label}数据，约需 ${seconds} 秒，请稍候...`,
       shouldQuote()

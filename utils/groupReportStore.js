@@ -9,7 +9,7 @@
  *   不是「只统计开了推送的人」——群里没订阅推送的人也想上群榜。
  * - **每个成员至少 1 次营地请求**（collectBattles 固定要实拉第一页才敢信库是新的，
  *   原因见 battleArchive 的注释），所以成员数必须有上限，且不自己 sleep 错峰：
- *   api.js 的全局队列已经保证相邻真实请求间隔 MIN_REQUEST_GAP_MS，
+ *   api.js 的队列已经保证同一个账号相邻真实请求间隔 MIN_REQUEST_GAP_MS，
  *   在这里再 sleep 是白等（rankStore 踩过，22 个账号白等 13 秒）。
  *
  * 订阅表单独存 data/GroupReportPush.yaml：pushList（GameRecordPush.yaml）是按 QQ 存的，

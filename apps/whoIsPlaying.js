@@ -1,9 +1,8 @@
 /**
  * #谁在打游戏 —— 列出本群谁正在对局、谁在线。
  *
- * **这条指令一次营地请求都不发。** 数据全部来自战绩推送轮询顺手留下的观测快照
- * （apps/gameRecordPush.js 的 observeSnapshot 写进 GameRecordPush.yaml）：
- *   lastGaming      本轮观测到在不在**对局**中（'1' / ''）—— 只认战绩列表的 isGaming
+ * 数据来自观测快照（GameRecordPush.yaml 里每个订阅项的几个 lastXxx 字段）：
+ *   lastGaming      最近一次观测到在不在**对局**中（'1' / ''）—— 只认战绩列表的 isGaming
  *   lastGamingHero  在对局时用的英雄 heroId
  *   lastOnlineState 营地的 gameOnline 三态（0 离线 / 1 在线 / 2 游戏中）
  *   lastSeenAt      这份快照的观测时刻，用来判数据够不够新
@@ -12,33 +11,46 @@
  * （大厅、匹配中、翻战绩都算 2），不等于在对局。图上因此分「正在对局」和
  * 「客户端在线」两组，后者的人没有英雄可显示。
  *
- * 所以它只覆盖「开过战绩推送或上下线提醒的人」——这正是想被看到的那批人，
- * 而且不给营地增加任何负载。反过来说，快照的新鲜度受推送的自适应退避影响，
- * 离线越久查得越稀（正式订阅十分钟一轮，只采集的影子订阅半小时一轮），
- * 所以快照可能偏旧，超时的那条在文案里标出来（阈值也按这两档分开，见下面的常量）。
+ * 快照有两个来源，**分工不能混**：
+ * - 开过战绩推送 / 上下线提醒的人 → 常驻轮询每轮顺手写（apps/gameRecordPush.js）
+ * - 只绑了营地号、什么推送都没开的人（影子订阅）→ **不常驻查**，由这条指令
+ *   触发时现刷一遍（见下面的 refreshSnapshots）。他们数量最多又常年离线，
+ *   常驻查是纯烧配额，实测就是营地 -30107 的主要来源。
  *
- * 英雄名走官网 herolist.json（getHeroNameMap，6 小时内存缓存），也不碰营地接口。
+ * 所以这条指令现在会发请求了（只有现刷那几十秒），刷不到就退回旧快照，
+ * 超过 STALE_MS 的那条在文案里标「数据较旧」。
+ *
+ * 英雄名走官网 herolist.json（getHeroNameMap，6 小时内存缓存），不碰营地接口。
  *
  * 出图走 WhoIsPlaying.html（视觉与战报同源），渲染失败时回落到纯文字名单。
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, isPureShadow } from '../utils/pushStore.js'
+import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, isPureShadow, collectSnapshot, mergeSubState } from '../utils/pushStore.js'
 import { membersOfGroup, isIndexReady, refreshGroupIndex } from '../utils/groupIndex.js'
-import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser } from '#utils'
+import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser, isProfileHidden, getCurrentId, ApiService } from '#utils'
 import { heroIconUrl } from '../utils/reportStore.js'
 
-/** 快照超过这个时长就在文案里标「数据较旧」，单位毫秒。对着正式订阅那档退避封顶（十分钟一轮）定的 */
+/** 快照超过这个时长就在文案里标「数据较旧」，单位毫秒。对着常驻轮询那档封顶（十分钟一轮）定的 */
 const STALE_MS = 15 * 60 * 1000
 
 /**
- * 影子订阅（只采集、不播报）的容忍时长，单独放宽一档。
+ * 现刷的门限：快照比这新就直接用，不再重新查。
  *
- * 它们那档退避封顶是 idleBackoffMax × 3（默认 30 分钟一轮，见 apps/gameRecordPush.js
- * 的 SHADOW_BACKOFF_FACTOR），沿用 15 分钟会让离线那组**成片**顶着「数据较旧」——
- * 满屏都是标记的时候，标记就不再是「这条可能不准」的信号了。
- * ⚠️ 跟 SHADOW_BACKOFF_FACTOR 配套：主人把 idleBackoffMax 调大调小，两边都要跟着改。
+ * 连点这条指令不会重复打请求，也是现刷唯一能防住"被刷爆"的闸门——
+ * 影子订阅已经不在常驻轮询里了，这条指令是它们唯一的请求来源。
  */
-const SHADOW_STALE_MS = 35 * 60 * 1000
+const REFRESH_COOLDOWN_MS = 10 * 60 * 1000
+
+/**
+ * 单次最多现刷几个人。每人一次 profile（在打的人再加一次战绩列表）。
+ * 采集是**多路并发**的，路数取决于池里有几个可用账号（见 refreshSnapshots）：
+ * 单账号约 1.5 秒/人，上限 24 人就是 30 多秒；4 个号不到 10 秒。
+ * 超出的按「快照最旧」优先刷，剩下的用旧数据出图（会带「数据较旧」标记）。
+ */
+const MAX_REFRESH = 24
+
+/** 现刷并发锁：一次只允许一条指令在刷，避免几个人同时发把请求量翻倍 */
+let refreshing = false
 
 /**
  * 「刚打完」的展示窗口：对局结束后这么久之内还单独列一组。
@@ -52,7 +64,7 @@ export class WhoIsPlaying extends plugin {
   constructor () {
     super({
       name: '王者谁在打游戏',
-      dsc: '看本群谁在对局、谁在线，零营地请求',
+      dsc: '看本群谁在对局、谁在线（查看时现刷）',
       event: 'message',
       // 同 gameRecordPush：完整锚定的短指令要抢在 queryGameStats 的宽匹配前面
       priority: 0,
@@ -111,6 +123,12 @@ export class WhoIsPlaying extends plugin {
       return
     }
 
+    // 现刷影子订阅的快照：这批人不在常驻轮询里，这条指令是唯一的请求来源（见 refreshSnapshots）
+    await this.refreshSnapshots(e, subs)
+
+    // 现刷会改订阅项，出图前重读一次，否则用的还是刷新前那份快照
+    const fresh = loadPushList()
+
     const heroMap = await getHeroNameMap()
     const now = Date.now()
 
@@ -123,9 +141,10 @@ export class WhoIsPlaying extends plugin {
     // 只开了战绩推送、还没攒到过快照的订阅：既不算在线也不算离线，单独说一句
     const unknown = []
 
-    // 头像是各适配器本地拼地址（官方机器人才会真去问 pickMember），并发取不会卡
-    const rows = await Promise.all(subs.map(async ([qq, sub]) => {
-      const row = buildRow(qq, sub, heroMap, now)
+    // 头像是各适配器本地拼地址（官方机器人才会真去问 pickMember），并发取不会卡。
+    // 注意读的是**现刷之后**重读的那份，否则用的还是刷新前的旧快照。
+    const rows = await Promise.all(subs.map(async ([qq]) => {
+      const row = buildRow(qq, fresh[qq] || {}, heroMap, now)
       row.avatar = await this.avatarOf(e, qq)
       return row
     }))
@@ -168,6 +187,70 @@ export class WhoIsPlaying extends plugin {
     ], shouldQuote())
   }
 
+  /**
+   * 现刷影子订阅的在线快照。这批人（没开任何推送、只绑了营地号的群友）**不在常驻轮询里**，
+   * 这条指令是他们唯一的请求来源——理由见文件头「快照有两个来源」。
+   *
+   * 三道闸门，缺一道就能把营地配额打爆：
+   *  ① 只刷纯影子订阅：开过上下线提醒 / 战绩推送的人由常驻轮询管，那是另一条线，
+   *     不能因为有人瞄了一眼名单就把他们挨个查一遍（还可能在群里触发一条播报）
+   *  ② REFRESH_COOLDOWN_MS 门限：刚刷过的直接复用，连点不会重复打请求
+   *  ③ MAX_REFRESH 上限 + 按快照最旧优先：人特别多的群先刷最不准的那批，
+   *     剩下的用旧数据出图（图上会带「数据较旧」标记）
+   *
+   * 单个号失败（频控、登录态问题、隐藏主页）不中断整轮：留旧快照就好。
+   * 上一条指令还在刷时直接返回，两条指令并发刷会把请求量翻倍。
+   *
+   * @param {object} e 消息事件，只用来发等待提示
+   * @param {Array<[string, object]>} subs 本群名单里的订阅项
+   */
+  async refreshSnapshots (e, subs) {
+    const now = Date.now()
+    const due = subs
+      .filter(([, sub]) => isPureShadow(sub))
+      .filter(([, sub]) => now - (Number(sub.lastSeenAt) || 0) > REFRESH_COOLDOWN_MS)
+      .sort((a, b) => (Number(a[1].lastSeenAt) || 0) - (Number(b[1].lastSeenAt) || 0))
+      .slice(0, MAX_REFRESH)
+
+    if (!due.length || refreshing) return
+
+    refreshing = true
+    try {
+      // 一个人一秒多，串行拉完要好一会儿，不先说一声群里会以为机器人卡死了。
+      // 注意请求是**按账号并发**的（N 个号 N 路并行），秒数要按账号数折算，
+      // 不然多账号的部署会被自己的提示吓到（明明 5 秒能刷完，写着 20 秒）。
+      const workers = Math.max(1, Math.min(ApiService.usableAccountCount(), due.length))
+      const eta = Math.max(1, Math.ceil(due.length * 1.5 / workers))
+      await e.reply(`正在刷新 ${due.length} 人的在线状态，约需 ${eta} 秒`, shouldQuote())
+
+      // 采集并发、写盘串行：请求会被 api 层轮着分给不同账号（见 #rotateGlobals），
+      // 所以开 N 路协程就能真正并行；而 mergeSubState 是**整表读-改-写**，
+      // 并发调它会互相覆盖（后写的把先写的冲掉），必须等采完再一个一个写。
+      const queue = [...due]
+      const collected = []
+      const worker = async () => {
+        while (queue.length) {
+          const [qq, sub] = queue.shift()
+          const campId = getCurrentId(qq)
+          if (!campId || isProfileHidden(campId)) continue
+
+          try {
+            const { patch } = await collectSnapshot(qq, campId, sub)
+            if (Object.keys(patch).length) collected.push([qq, patch])
+          } catch (error) {
+            // 单个人失败不该毁掉整张图：留旧快照（图上会标「数据较旧」）
+            logger.debug(`[王者谁在打游戏] 现刷 ${qq} 失败: ${error.message}`)
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: workers }, worker))
+      for (const [qq, patch] of collected) mergeSubState(qq, patch)
+    } finally {
+      refreshing = false
+    }
+  }
+
   /** 出图。失败返回 null，由调用方回落到文字名单 */
   async shot (e, { playing, justEnded, inGameIdle, online, offline, unknown }, here) {
     try {
@@ -185,8 +268,7 @@ export class WhoIsPlaying extends plugin {
         inGameIdle,
         online,
         offline,
-        unknown,
-        footText: '数据来自推送轮询的快照，不额外请求营地 · 离线时检查间隔会自动拉长'
+        unknown
       })
     } catch (error) {
       logger.error(`[王者谁在打游戏] 渲染失败: ${error.message}`)
@@ -286,7 +368,7 @@ function buildRow (qq, sub, heroMap, now) {
     hasState,
     idleInGame,
     seenAt,
-    stale: seenAt > 0 && now - seenAt > (isPureShadow(sub) ? SHADOW_STALE_MS : STALE_MS),
+    stale: seenAt > 0 && now - seenAt > STALE_MS,
     // 新增展示字段：对局/在线时长、段位、刚打完
     gamingFor,
     onlineFor,

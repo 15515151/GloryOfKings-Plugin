@@ -32,7 +32,8 @@ export const SNAPSHOT_TTL = 12 * 60 * 60 * 1000
 /** 对方隐藏了主页，这类账号永远进不了榜，不必重试 */
 const CODE_PROFILE_HIDDEN = -10107
 
-// 刷榜节奏由 api.js 的全局队列统一控制（MIN_REQUEST_GAP_MS，相邻两次真实请求 1200ms），
+// 刷榜节奏由 api.js 的队列统一控制（MIN_REQUEST_GAP_MS，**同一个账号**相邻两次真实请求 1200ms；
+// 多个全局账号之间是轮询的，所以实际总吞吐按账号数倍增），
 // 这里不再自己 sleep 错峰。早先每个账号还额外 sleep 600ms，那 600ms 完全被 1200ms 的
 // 队列间隔吃掉（队列本来就要等到 1200ms 才放行），纯粹白等——22 个账号一轮多花 13 秒。
 // 想调整节奏改 api.js 的 MIN_REQUEST_GAP_MS。

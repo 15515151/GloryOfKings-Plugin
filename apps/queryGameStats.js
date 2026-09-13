@@ -3,7 +3,7 @@ import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { PluginData, PluginPath } from '#components'
 import { ApiService, readYamlFile, getUserAvatar, isQQNumber, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote, resolveMemberName } from '#utils'
-import { MIN_REQUEST_GAP_MS } from '../utils/api.js'
+import { estimateRequestSeconds } from '../utils/api.js'
 // 详情图与评价图标解析被战绩推送共用，抽到了 utils/battleDetailImage.js
 import { fetchBattleDetail, renderBattleDetail, resolveMvp, resolveEvaluate } from '../utils/battleDetailImage.js'
 
@@ -123,9 +123,10 @@ export class QueryGameStats extends plugin {
 
     let battleList
     try {
-      // 英雄战绩要在近 100 场里筛，最多翻 MAX_PAGES 页、全局队列 1.2 秒一发，
-      // 十几秒没动静用户会以为指令没生效，先给个回执（和群报的做法一致）
-      const seconds = Math.ceil((MAX_PAGES - 1) * MIN_REQUEST_GAP_MS / 1000)
+      // 英雄战绩要在近 100 场里筛，最多翻 MAX_PAGES 页、每页一次请求，
+      // 十几秒没动静用户会以为指令没生效，先给个回执（和群报的做法一致）。
+      // 秒数交给 estimateRequestSeconds 算：请求按账号并发，池里有几个号就快几倍
+      const seconds = estimateRequestSeconds(MAX_PAGES - 1)
       await e.reply(`正在翻找 ${matchedName} 的近期战绩，最多约 ${seconds} 秒，请稍候...`, shouldQuote())
       battleList = await this.collectBattles(ID, String(userId), null, { forcePaginate: true })
     } catch (error) {

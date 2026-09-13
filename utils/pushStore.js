@@ -1274,3 +1274,175 @@ export function resolveNextCheck (sub, { active, nowMs, maxMultiplier = DEFAULT_
   // multiplier 倍间隔 = 查一轮 + 跳过 (multiplier - 1) 轮
   return { skipTicks: Math.max(0, multiplier - 1), idleSince: String(idleSince) }
 }
+
+/* ------------------------------------------------------------ 观测快照 */
+
+/**
+ * 本轮观测快照，写进订阅项供 #谁在打游戏 直接读。
+ *
+ * 两个数据源都可能缺：只开战绩推送时没有 state，退避轮或 needBattleList 判否时没有 data。
+ * 缺的字段就不写（保留上一轮的值），只有真观测到才更新 lastSeenAt —— 否则「数据新鲜度」
+ * 会被一个什么都没拿到的轮次刷新成当前时间，指令那头就看不出数据其实是旧的了。
+ *
+ * @param {object|null} state fetchOnlineState 的返回
+ * @param {object|null} data fetchLatest 的返回
+ * @param {number} nowMs 观测时刻
+ * @param {object} prev 上一轮的订阅项，用来判「刚打完」和「是不是还在打同一局」
+ */
+function observeSnapshot (state, data, nowMs, prev = {}) {
+  if (!state && !data) return {}
+
+  const patch = { lastSeenAt: String(nowMs) }
+
+  if (state) patch.lastOnlineState = String(state.gameOnline)
+
+  // 游戏昵称（营地 roleName）不在这里写，由调用方单独并进来 —— 原因见 collectSnapshot
+  // 里 roleNameFromState 的声明：state 可能因为「营地问不出在线状态」被判成无效整个丢弃，
+  // 而昵称是同一份响应里另一个独立字段，不该跟着一起没。
+
+  // 在对局中：**只信战绩列表的 isGaming**。
+  //
+  // 早先用 `state.gameOnline===2` 兜底（那轮没拉战绩列表时），后果是
+  // 「正在对局」被标出来、英雄却永远为空 —— 因为英雄只在 data.gaming.heroId 里，
+  // 而 gameOnline===2 只代表「客户端开着」（大厅、匹配中、翻战绩都算 2，见
+  // pushStore.fetchOnlineState 的三态注释）。两路判据必须同源，否则图上出现空行。
+  // 只采集的号在「游戏中」时也会补拉一次战绩列表（见 needBattleList），英雄才有来源。
+  const gaming = data ? Boolean(data.isGaming) : false
+  const prevGaming = String(prev?.lastGaming || '') === '1'
+
+  patch.lastGaming = gaming ? '1' : ''
+  patch.lastGamingHero = gaming ? String(data?.gaming?.heroId || '') : ''
+  // 营地给了 isGaming 却没给 heroId：没见过的组合，留一条痕迹方便回查，但不影响出图
+  if (gaming && !data?.gaming?.heroId) {
+    logger.debug(`[王者推送] ${prev.campId || ''} isGaming=true 但没给 heroId，本轮英雄留空`)
+  }
+
+  // 「刚打完」：#谁在打游戏 要显示「X 分钟前刚结束」。
+  // 只在 1 -> 0 的那一轮记时刻，之后每轮不再更新，相对时间才会往前走。
+  // 反过来 0 -> 1 时清掉，否则上一局的结束时刻会一直挂着。
+  //
+  // 判 1 -> 0 必须要求**这一轮真的拉到了战绩列表**（data 非空）：没拉到 data 时
+  // gaming 恒为 false（上面已收窄），不设防的话一次请求失败/频控就会被当成
+  // 「刚打完」，凭空冒出一条「刚刚结束」。存量里那些 lastGaming='1' 的老快照
+  // 也会在第一次读到时误入「刚打完」组，这条守卫把过渡期这一下挡掉。
+  if (data && prevGaming && !gaming) patch.lastGameEndAt = String(nowMs)
+  else if (!prevGaming && gaming) patch.lastGameEndAt = ''
+  else if (gaming) patch.lastGameEndAt = ''
+
+  // 同一局的开始时刻：dtEventTime 一局之内恒定，是「一局」的唯一标识。
+  // 只在开局那一轮（或换了局的轮次）写，避免退避轮拿旧时间戳反复刷新。
+  const start = gaming ? String(data?.gaming?.dtEventTime || '') : ''
+  if (startingNewGame(start, prev)) {
+    patch.lastGamingStart = start
+    // 换局就把「已经打了多久」的起点也一起换掉，否则会显示成上一局的时长
+    patch.lastGameSeq = String(data?.list?.[0]?.gameSeq || '')
+  }
+
+  // 段位顺手记一份：#谁在打游戏 要显示段位徽章，而它自己不发请求。
+  // 战绩列表第一场带 roleJobName/stars；只有 profile 时没有这两个字段，保留旧值。
+  if (data) {
+    const latest = (data.list || [])[0] || {}
+    if (latest.roleJobName) patch.roleJobName = String(latest.roleJobName)
+    // stars 是「这局之后的星数」，0 是真实值（1 星再输一局），不能用 || 兜底
+    if (latest.stars !== undefined && latest.stars !== null && latest.stars !== '') {
+      patch.stars = String(latest.stars)
+    }
+  }
+
+  return patch
+}
+
+/**
+ * 这一轮是不是「开了一局新的」。
+ *
+ * `dtEventTime` 一局之内恒定，所以它变了就是新的一局；从没记过（历史订阅没这个字段）
+ * 也算新的一局，好让第一轮就把起点写上。
+ *
+ * @param {string} start 本轮拿到的一局开始时刻（不在对局时是空串）
+ * @param {object} prev 上一轮的订阅项
+ * @returns {boolean}
+ */
+function startingNewGame (start, prev) {
+  if (!start) return false
+  // prev.lastGamingStart 可能是数字（早期写法）或字符串，统一成字符串比
+  return String(prev?.lastGamingStart ?? '') !== start
+}
+
+/**
+ * 采一次在线状态快照，返回能直接 mergeSubState 进订阅项的字段。
+ *
+ * **推送轮询和 `#谁在打游戏` 的现刷共用这一份**：图上的「正在对局」和英雄都来自
+ * 这些字段，两边各写一套迟早漂移（这正是「对局只认 isGaming」那条规矩的由来）。
+ *
+ * 只采不播：上下线播报、战绩推送、退避计数都由调用方处理。state / data 一并返回，
+ * 调用方要播报时还得用它们。
+ *
+ * 请求数是自适应的一次或两次：profile（返回体最小）拿在线状态，只有
+ * needBattleList 判为「值得拉」时才多打一次战绩列表（详见那个函数）。
+ *
+ * @param {string|number} qq 属主 QQ（鉴权候选按它取）
+ * @param {string} campId 营地 ID
+ * @param {object} sub 订阅项
+ * @param {number} [nowMs] 观测时刻
+ * @returns {Promise<{state: object|null, data: object|null, patch: object}>}
+ *   state / data 为 null 表示这一轮没拿到；两个都空时 patch 也是空的
+ */
+export async function collectSnapshot (qq, campId, sub, nowMs = Date.now()) {
+  const battleOn = sub?.battle !== false
+  const onlineOn = sub?.online === true
+  // 只采集不播报：给 #谁在打游戏 攒在线状态快照用。三种来源都算——
+  //   ① 显式开了在线状态展示（onlineStatus）
+  //   ② 开了上下线提醒（online）—— 它本来就要拉 profile，顺手记一份不额外发请求
+  //   ③ 没订阅的绑定号（影子订阅，只带 onlineStatus）
+  const snapshotOn = onlineOn || isFlagOn(sub, 'onlineStatus')
+
+  let state = null
+  let onlineSignalMissing = false
+  // 本轮 profile 拿到的游戏昵称，独立于 state 存活：营地可能不给在线状态，
+  // 但昵称照样给（见下面的分支），所以不能挂在 state 上一起被丢弃
+  let roleNameFromState = ''
+
+  if (snapshotOn) {
+    state = await fetchOnlineState(campId, qq)
+    if (state === FETCH_HIDDEN) state = null
+    // 营地只关了「在线状态」授权的号，三个字段全给 0（判据见 hasOnlineSignal）。
+    // 这不是离线而是「没告诉你」，当成没拿到，调用方就不会拿它报上下线、
+    // observeSnapshot 也不会把 lastOnlineState 记成 0；战绩那一路照旧走
+    //（营地的「在线状态」和「战绩」是两个独立的隐私开关）。
+    //
+    // 注意 roleName 要**先捞出来**再置 null：同一次 profile 返回里，在线状态和昵称是
+    // 两个独立的字段，营地关掉前者不代表不给后者（实测这几个号都拿得到昵称）。
+    // 早先直接把 state 整个置 null，昵称就跟着被扔了，出图上全是空名字。
+    if (state && !hasOnlineSignal(state)) {
+      logger.debug(`[王者推送] ${qq} 营地未返回在线状态（三字段全 0），本轮只按战绩列表处理`)
+      roleNameFromState = state.roleName ? String(state.roleName) : ''
+      state = null
+      onlineSignalMissing = true
+    } else if (state?.roleName) {
+      roleNameFromState = String(state.roleName)
+    }
+  }
+
+  // 战绩列表这一轮拉不拉，判据见 needBattleList
+  // 注意传的是 battleOn 而不是 snapshotOn：只采集（onlineStatus）时不拉战绩列表，
+  // profile 里的 gameOnline 已经够填快照了，省下的请求量正好抵掉扩量的开销
+  let data = null
+  if (needBattleList({ battleOn, onlineOn: snapshotOn, state, sub })) {
+    // profile 刚打过，两个端点的请求别贴在一起
+    if (snapshotOn) await sleep(REQUEST_INTERVAL)
+    data = await fetchLatest(campId, qq)
+    if (data === FETCH_HIDDEN) data = null
+  }
+
+  const patch = {
+    ...observeSnapshot(state, data, nowMs, sub),
+    // 游戏昵称单独并进来，理由见 roleNameFromState 的声明：它不从 state 走，
+    // 因为 state 可能被判成「没在线信号」而整个丢掉
+    ...(roleNameFromState ? { roleName: roleNameFromState } : {}),
+    // 营地这轮没给在线状态：把可能留着的旧值清成空串，让 #谁在打游戏 归到
+    // 「还没采集到状态」而不是谎报离线（空串和真的 '0' 语义不同）
+    ...(onlineSignalMissing ? { lastOnlineState: '' } : {})
+  }
+
+  return { state, data, patch }
+}

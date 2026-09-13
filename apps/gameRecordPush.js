@@ -22,6 +22,9 @@
  *   ① 该不该拉战绩列表 —— pushStore.needBattleList，零代价，不影响任何提醒；
  *   ② 这一轮该不该查 —— pushStore.resolveNextCheck 按不活跃时长退避，跳过若干轮，
  *      代价是上线播报最坏晚「封顶倍数 × cron」，配置项 idleBackoffMax 填 1 可关掉。
+ * - 轮询名单里**没有影子订阅**（只给 #谁在打游戏 采集、不推任何群的那批人）：他们数量
+ *   最多（实测 20 个订阅里 17 个）又常年离线，常驻查纯属白烧配额，改成那条指令触发时
+ *   现刷（见 apps/whoIsPlaying.js）。所以这里只管真会播报的两路：战绩推送 / 上下线提醒。
  *
  * 数据层与全部纯计算逻辑在 utils/pushStore.js，这里只管指令交互和消息发送。
  */
@@ -38,6 +41,7 @@ import {
   streakMilestone,
   fetchLatest,
   fetchOnlineState,
+  collectSnapshot,
   hasOnlineSignal,
   getHeroNameMap,
   calcStreak,
@@ -103,15 +107,6 @@ const RECOVER_PROBE_ROUNDS = 3
  * 安静期结束后不直接恢复满速，先按 RECOVER_PROBE_ROUNDS 每轮只探一个。
  */
 const RATE_LIMIT_QUIET_MS = 15 * 60 * 1000
-
-/**
- * 影子订阅（只给 #谁在打游戏 采集、不往任何群播报）的退避封顶倍数，
- * 在 idleBackoffMax 之上再乘这一档：它一个群都不推，晚半小时知道某人还在离线没有代价，
- * 而正式订阅晚一个封顶间隔才播上线就不像话了。活跃时两条路径都立刻回到高频，
- * 所以放大只影响「一直没动静」的号。
- * ⚠️ apps/whoIsPlaying.js 的 SHADOW_STALE_MS 跟这一档配套，改这里要一起看。
- */
-const SHADOW_BACKOFF_FACTOR = 3
 
 /**
  * 轮询游标：上一轮被预算挡下的位置。没有它的话每轮都从头遍历，
@@ -547,9 +542,17 @@ export class GameRecordPush extends plugin {
     // （包括把 getCurrentId 换成共享库那个异步版）——一旦让出 microtask，
     // 而重入保护（下面的 `running`）又在这段之后才生效，整表覆盖丢写就成现实了。
     const list = loadPushList()
+    // 纯影子订阅（只给 #谁在打游戏 采集、不往任何群播报）**不进常驻轮询**：
+    // 那批人是「没开任何推送、只绑了营地号」的群友，离线也好、从没上线也好，
+    // 每轮都照样占一份配额（实测 20 个订阅里 17 个是它们、贡献了八成请求量，
+    // 正是 -30107 的来源）。它们的快照改由 #谁在打游戏 触发时现刷
+    // （apps/whoIsPlaying.js），没人看就不查——上下线提醒和战绩推送因此能按原速跑。
+    //
+    // 注意只是**不查**，记录本身照旧由下面这段补建和维护：那是快照的落脚处，
+    // 现刷的时候得有地方写（mergeSubState 找不到记录就直接丢弃）。
     const entries = Object.entries(list)
-      .filter(([qq, sub]) => !isBlackUser(qq) &&
-        (isFlagOn(sub, 'battle') || isFlagOn(sub, 'online') || isFlagOn(sub, 'onlineStatus')))
+      .filter(([qq, sub]) => !isBlackUser(qq) && !isPureShadow(sub) &&
+        (isFlagOn(sub, 'battle') || isFlagOn(sub, 'online')))
 
     // 把「绑了营地号但没开任何推送」的人补成影子订阅——#谁在打游戏 要能看到他们。
     //
@@ -559,7 +562,10 @@ export class GameRecordPush extends plugin {
     //
     // 索引不可用时（冷启动适配器没连上）整段跳过：宁可这一轮不补，
     // 也不能因为「索引是空的」就把所有人判成退群、把订阅删光。
-    const known = new Set(entries.map(([qq]) => qq))
+    // 「已经存在的订阅」要以**整张表**为准，不能拿上面的 entries —— 那是「这轮要查谁」，
+    // 影子订阅被排除在外，用它算 known 会让每轮都把影子当成「还没建」重复补一遍，
+    // 补建是整条覆盖写，它们的快照字段（昵称、观测时刻）每轮被清空一次（实测踩过）。
+    const known = new Set(Object.keys(list))
     const shadows = new Set()
     const removed = new Set()
 
@@ -745,47 +751,11 @@ export class GameRecordPush extends plugin {
     // 老订阅没有 battle 字段，按开着算（向后兼容首个版本写下的订阅）
     const battleOn = sub.battle !== false
     const onlineOn = sub.online === true
-    // 只采集不播报：给 #谁在打游戏 攒在线状态快照用。三种来源都算——
-    //   ① 显式开了在线状态展示（onlineStatus）
-    //   ② 开了上下线提醒（online）—— 它本来就要拉 profile，顺手记一份不额外发请求
-    //   ③ 没订阅的绑定号（影子订阅，只带 onlineStatus）
-    const snapshotOn = onlineOn || isFlagOn(sub, 'onlineStatus')
 
-    let state = null
-    let onlineSignalMissing = false
-    // 本轮 profile 拿到的游戏昵称，独立于 state 存活：营地可能不给在线状态，
-    // 但昵称照样给（见下面的分支），所以不能挂在 state 上一起被丢弃
-    let roleNameFromState = ''
-    if (snapshotOn) {
-      state = await fetchOnlineState(campId, qq)
-      if (state === FETCH_HIDDEN) state = null
-      // 营地只关了「在线状态」授权的号，三个字段全给 0（判据见 pushStore.hasOnlineSignal）。
-      // 这不是离线而是「没告诉你」，当成没拿到，后面 checkOnline 就不会拿它报上下线、
-      // observeSnapshot 也不会把 lastOnlineState 记成 0；战绩那一路照旧走（两个隐私开关是独立的）。
-      //
-      // 注意 roleName 要**先捞出来**再置 null：同一次 profile 返回里，在线状态和昵称是
-      // 两个独立的字段，营地关掉前者不代表不给后者（实测这几个号都拿得到昵称）。
-      // 早先直接把 state 整个置 null，昵称就跟着被扔了，出图上全是空名字。
-      if (state && !hasOnlineSignal(state)) {
-        logger.debug(`[王者推送] ${qq} 营地未返回在线状态（三字段全 0），本轮只按战绩列表处理`)
-        roleNameFromState = state.roleName ? String(state.roleName) : ''
-        state = null
-        onlineSignalMissing = true
-      } else if (state?.roleName) {
-        roleNameFromState = String(state.roleName)
-      }
-    }
-
-    // 战绩列表这一轮拉不拉，判据见 pushStore.needBattleList
-    // 注意传的是 battleOn 而不是 snapshotOn：只采集（onlineStatus）时不拉战绩列表，
-    // profile 里的 gameOnline 已经够填快照了，省下的请求量正好抵掉扩量的开销
-    let data = null
-    if (needBattleList({ battleOn, onlineOn: snapshotOn, state, sub })) {
-      // profile 刚打过，两个端点的请求别贴在一起
-      if (snapshotOn) await sleep(REQUEST_INTERVAL)
-      data = await fetchLatest(campId, qq)
-      if (data === FETCH_HIDDEN) data = null
-    }
+    // 采快照：先拉 profile，needBattleList 判为值得时再补一次战绩列表。
+    // 这一步的口径与 #谁在打游戏 的现刷**同源**（都在 pushStore.collectSnapshot），
+    // 这儿只管拿结果去决定播报什么。
+    const { state, data, patch } = await collectSnapshot(qq, campId, sub)
 
     if (battleOn && data) {
       const handled = await this.checkBattle(qq, sub, campId, data, heroMap)
@@ -799,26 +769,16 @@ export class GameRecordPush extends plugin {
       await this.checkOnline(qq, sub, data, state)
     }
 
-    // 收尾：按这一轮的活跃度定接下来跳过几轮，顺带留一份本轮观测快照
+    // 收尾：按这一轮的活跃度定接下来跳过几轮，顺带把本轮观测写进快照字段
+    //（#谁在打游戏 直接读那几个字段，它自己不请求营地）
     const nowMs = Date.now()
     mergeSubState(qq, {
       ...resolveNextCheck(sub, {
         active: isSubActive(state, data, Math.floor(nowMs / 1000)),
         nowMs,
-        maxMultiplier: backoffCap(sub)
+        maxMultiplier: readConfig().idleBackoffMax
       }),
-      // 给 #谁在打游戏 用：那条指令一次营地请求都不发，只读这几个字段。
-      // lastSeenAt 是本轮的观测时刻（判数据够不够新），lastGaming 是「此刻在不在对局中」。
-      // 判据只认战绩列表的 isGaming —— 影子订阅在「游戏中」时也会补拉一次战绩列表
-      // （见 needBattleList），所以这条快照对每个人都拿得到英雄。gameOnline===2 单用
-      // 会推出没有英雄的「假对局」，已在 observeSnapshot 里弃用。
-      ...observeSnapshot(state, data, nowMs, sub),
-      // 游戏昵称单独并进来，理由见 roleNameFromState 的声明：它不从 state 走，
-      // 因为 state 可能被判成「没在线信号」而整个丢掉
-      ...(roleNameFromState ? { roleName: roleNameFromState } : {}),
-      // 营地这轮没给在线状态：把可能留着的旧值清成空串，让 #谁在打游戏 归到
-      // 「还没采集到状态」而不是谎报离线（空串和真的 '0' 语义不同）
-      ...(onlineSignalMissing ? { lastOnlineState: '' } : {})
+      ...patch
     })
   }
 
@@ -1129,109 +1089,6 @@ function readConfig () {
   } catch {
     return {}
   }
-}
-
-/**
- * 这个订阅的退避封顶倍数。影子订阅在配置值之上再放宽一档（见 SHADOW_BACKOFF_FACTOR）：
- * 它不往任何群播报，晚半小时知道某人还在离线没有代价。
- *
- * @param {object} sub 订阅项
- * @returns {number} 倍数，1 = 全程按 cron 轮询
- */
-function backoffCap (sub) {
-  const cap = Math.max(1, Number(readConfig().idleBackoffMax) || DEFAULT_IDLE_BACKOFF_MAX)
-  return isPureShadow(sub) ? cap * SHADOW_BACKOFF_FACTOR : cap
-}
-
-/**
- * 本轮观测快照，写进订阅项供 #谁在打游戏 直接读，不额外发请求。
- *
- * 两个数据源都可能缺：只开战绩推送时没有 state，退避轮或 needBattleList 判否时没有 data。
- * 缺的字段就不写（保留上一轮的值），只有真观测到才更新 lastSeenAt —— 否则「数据新鲜度」
- * 会被一个什么都没拿到的轮次刷新成当前时间，指令那头就看不出数据其实是旧的了。
- *
- * @param {object|null} state fetchOnlineState 的返回
- * @param {object|null} data fetchLatest 的返回
- * @param {number} nowMs 观测时刻
- * @param {object} prev 上一轮的订阅项，用来判「刚打完」和「是不是还在打同一局」
- */
-function observeSnapshot (state, data, nowMs, prev = {}) {
-  if (!state && !data) return {}
-
-  const patch = { lastSeenAt: String(nowMs) }
-
-  if (state) patch.lastOnlineState = String(state.gameOnline)
-
-  // 游戏昵称（营地 roleName）不在这里写，由调用方单独并进来 —— 原因见 checkOne 里
-  // roleNameFromState 的声明：state 可能因为「营地问不出在线状态」被判成无效整个丢弃，
-  // 而昵称是同一份响应里另一个独立字段，不该跟着一起没。
-
-  // 在对局中：**只信战绩列表的 isGaming**。
-  //
-  // 早先用 `state.gameOnline===2` 兜底（那轮没拉战绩列表时），后果是
-  // 「正在对局」被标出来、英雄却永远为空 —— 因为英雄只在 data.gaming.heroId 里，
-  // 而 gameOnline===2 只代表「客户端开着」（大厅、匹配中、翻战绩都算 2，见
-  // pushStore.fetchOnlineState 的三态注释）。两路判据必须同源，否则图上出现空行。
-  // 影子订阅现在会在「游戏中」时也拉一次战绩列表（见 needBattleList），英雄才有来源。
-  const gaming = data ? Boolean(data.isGaming) : false
-  const prevGaming = String(prev?.lastGaming || '') === '1'
-
-  patch.lastGaming = gaming ? '1' : ''
-  patch.lastGamingHero = gaming ? String(data?.gaming?.heroId || '') : ''
-  // 营地给了 isGaming 却没给 heroId：没见过的组合，留一条痕迹方便回查，但不影响出图
-  if (gaming && !data?.gaming?.heroId) {
-    logger.debug(`[王者推送] ${prev.campId || ''} isGaming=true 但没给 heroId，本轮英雄留空`)
-  }
-
-  // 「刚打完」：#谁在打游戏 要显示「X 分钟前刚结束」。
-  // 只在 1 -> 0 的那一轮记时刻，之后每轮不再更新，相对时间才会往前走。
-  // 反过来 0 -> 1 时清掉，否则上一局的结束时刻会一直挂着。
-  //
-  // 判 1 -> 0 必须要求**这一轮真的拉到了战绩列表**（data 非空）：没拉到 data 时
-  // gaming 恒为 false（上面已收窄），不设防的话一次请求失败/频控就会被当成
-  // 「刚打完」，凭空冒出一条「刚刚结束」。存量里那些 lastGaming='1' 的老快照
-  // 也会在第一次读到时误入「刚打完」组，这条守卫把过渡期这一下挡掉。
-  if (data && prevGaming && !gaming) patch.lastGameEndAt = String(nowMs)
-  else if (!prevGaming && gaming) patch.lastGameEndAt = ''
-  else if (gaming) patch.lastGameEndAt = ''
-
-  // 同一局的开始时刻：dtEventTime 一局之内恒定，是「一局」的唯一标识。
-  // 只在开局那一轮（或换了局的轮次）写，避免退避轮拿旧时间戳反复刷新。
-  const start = gaming ? String(data?.gaming?.dtEventTime || '') : ''
-  if (startingNewGame(start, prev)) {
-    patch.lastGamingStart = start
-    // 换局就把「已经打了多久」的起点也一起换掉，否则会显示成上一局的时长
-    patch.lastGameSeq = String(data?.list?.[0]?.gameSeq || '')
-  }
-
-  // 段位顺手记一份：#谁在打游戏 要显示段位徽章，而它自己不发请求。
-  // 战绩列表第一场带 roleJobName/stars；只有 profile 时没有这两个字段，保留旧值。
-  if (data) {
-    const latest = (data.list || [])[0] || {}
-    if (latest.roleJobName) patch.roleJobName = String(latest.roleJobName)
-    // stars 是「这局之后的星数」，0 是真实值（1 星再输一局），不能用 || 兜底
-    if (latest.stars !== undefined && latest.stars !== null && latest.stars !== '') {
-      patch.stars = String(latest.stars)
-    }
-  }
-
-  return patch
-}
-
-/**
- * 这一轮是不是「开了一局新的」。
- *
- * `dtEventTime` 一局之内恒定，所以它变了就是新的一局；从没记过（历史订阅没这个字段）
- * 也算新的一局，好让第一轮就把起点写上。
- *
- * @param {string} start 本轮拿到的一局开始时刻（不在对局时是空串）
- * @param {object} prev 上一轮的订阅项
- * @returns {boolean}
- */
-function startingNewGame (start, prev) {
-  if (!start) return false
-  // prev.lastGamingStart 可能是数字（早期写法）或字符串，统一成字符串比
-  return String(prev?.lastGamingStart ?? '') !== start
 }
 
 /** 索引里所有群号。影子订阅要扫「群里有哪些人」，得先有群的全集 */
