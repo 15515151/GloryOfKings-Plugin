@@ -115,6 +115,39 @@ export function resolveEvaluate (urls) {
 }
 
 /**
+ * 三杀及以上的标记。战绩**列表图**（`#查战绩`）和英雄详情图都要用，所以和上面几个解析放一起。
+ *
+ * 字段是**每场**的次数（`hero1TripleKillCnt` / `hero1UltraKillCnt` / `hero1RampageCnt` / `godLikeCnt`），
+ * 两个接口（morebattlelist 与英雄详情的 zjList）是同一族命名，都能直接用。
+ * **没有生涯累计口径** —— 英雄详情的 `heroInfo` 里翻遍了只有熟练度、胜场、金牌那些，
+ * 所以做不出「生涯共 N 次五杀」，只能逐场标。
+ *
+ * 图标是营地自己那套金色立体字 `camp.qq.com/battle/common/battle_score_v3_Nkill.png`
+ * （3~10kill + legend），已按 `kill_N.png` / `kill_legend.png` 落到 `resources/img/`。
+ * 那套图里的 N 是「连杀数」，三/四/五杀和 6~10 连杀共用同一套字形，正好对得上。
+ *
+ * **有几个档就出几个图标**，按营地那排的顺序降序排（神 → 五 → 四 → 三），
+ * 同一档拿过几次**只出一个图标**（营地的列表也不带次数）。
+ * 早先只取最高一档，是因为怕「三杀2 四杀2 五杀1」这种同场全列撑爆战绩行；
+ * 实测营地把四个都排了（孙权 17/5/9 那局），横排完全放得下，于是改成全出。
+ * 6~10 连杀（`sixKillCnt` 那批）没做 —— 两个接口的字段名还不一样
+ * （morebattlelist 是 `sixKill`/`sevenKill`，battledetail 是 `sixKillCnt`），要做得先对齐口径。
+ *
+ * @returns {Array<{icon: string, text: string, count: number}>} 没有则空数组（count 只是保留原始次数，图上不渲染）
+ */
+export function buildKillTags (item) {
+  const tiers = [
+    { count: Number(item?.godLikeCnt) || 0, level: 'legend', text: '超神' },
+    { count: Number(item?.hero1RampageCnt) || 0, level: 5, text: '五杀' },
+    { count: Number(item?.hero1UltraKillCnt) || 0, level: 4, text: '四杀' },
+    { count: Number(item?.hero1TripleKillCnt) || 0, level: 3, text: '三杀' }
+  ]
+  return tiers
+    .filter(t => t.count > 0)
+    .map(t => ({ icon: localImg(`kill_${t.level}.png`), text: t.text, count: t.count }))
+}
+
+/**
  * 详情里的玩家数据是不是齐了。
  *
  * 对局刚结束时接口会「少人」：战绩列表已经能查到这一局（所以推送被触发），

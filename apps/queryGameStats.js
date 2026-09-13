@@ -5,7 +5,8 @@ import { PluginData, PluginPath } from '#components'
 import { ApiService, readYamlFile, getUserAvatar, isQQNumber, Button, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote, resolveMemberName } from '#utils'
 import { estimateRequestSeconds } from '../utils/api.js'
 // 详情图与评价图标解析被战绩推送共用，抽到了 utils/battleDetailImage.js
-import { fetchBattleDetail, renderBattleDetail, resolveMvp, resolveEvaluate } from '../utils/battleDetailImage.js'
+import { fetchBattleDetail, renderBattleDetail, resolveMvp, resolveEvaluate, buildKillTags } from '../utils/battleDetailImage.js'
+import { resolveHero } from '../utils/heroName.js'
 
 // 战绩模式筛选走服务端 option 参数（取值见 morebattlelist 响应里的 options 字段）。
 // 各模式的 gametype/battleType 实测值：
@@ -99,7 +100,7 @@ export class QueryGameStats extends plugin {
     // 解析英雄名 → heroId
     let heroId, matchedName
     try {
-      const result = await this.resolveHeroId(heroName)
+      const result = await resolveHero(heroName)
       heroId = result.heroId
       matchedName = result.matchedName
     } catch (err) {
@@ -200,44 +201,6 @@ export class QueryGameStats extends plugin {
     })
 
     await e.reply([listImg, Button.heroStats(matchedName, ID)], shouldQuote())
-  }
-
-  /**
-   * 通过英雄名模糊匹配 heroId。
-   * 优先精确匹配，其次前缀匹配，最后包含匹配。
-   * @returns {{ heroId: string, matchedName: string }}
-   */
-  async resolveHeroId(heroName) {
-    const heroList = await ApiService.getHeroList()
-    if (!Array.isArray(heroList) || !heroList.length) {
-      throw new Error('获取英雄列表失败，请稍后再试')
-    }
-
-    const name = heroName.trim()
-
-    // 元X 缩写展开：元射→元流之子(射手)、元法→元流之子(法师) 等
-    const YUAN_ABBR = { 射: '射手', 法: '法师', 坦: '坦克', 辅: '辅助', 刺: '刺客' }
-    const abbr = name.match(/^元(.)/)
-    if (abbr && YUAN_ABBR[abbr[1]]) {
-      const full = `元流之子(${YUAN_ABBR[abbr[1]]})`
-      const hero = heroList.find(h => h.cname === full)
-      if (hero) return { heroId: String(hero.ename), matchedName: name }
-    }
-
-    // 精确匹配
-    let hero = heroList.find(h => h.cname === name)
-    // 前缀匹配
-    if (!hero) hero = heroList.find(h => h.cname?.startsWith(name))
-    // 包含匹配
-    if (!hero) hero = heroList.find(h => h.cname?.includes(name))
-
-    if (!hero) {
-      throw new Error(`未找到英雄「${name}」，请检查名称`)
-    }
-
-    // 元流之子(法师) → 元法 简写
-    const simplify = h => h.replace(/元流之子\s*[（(]\s*(.)[^）)]*[）)]/g, '元$1')
-    return { heroId: String(hero.ename), matchedName: simplify(hero.cname) }
   }
 
   /**
@@ -450,6 +413,7 @@ export class QueryGameStats extends plugin {
     tags: this.getTags(item),
     mvp: resolveMvp(item),
     evaluate: resolveEvaluate([item.evaluateUrlV3, item.evaluateUrlV2, item.evaluateUrl]),
+    killTags: buildKillTags(item),
     gradeGame: item.gradeGame
   })
 

@@ -187,18 +187,28 @@
             color: #9aa7bd;
         }
 
+        /* 三杀及以上 / 超神：营地那套金色立体字图标（resources/img/kill_N.png），
+           和英雄详情图共用同一份解析，接口没有生涯累计口径，只能逐场标。
+           高度对齐 KDA 数字（.kda-stats 的字号），跟营地列表一样紧贴战绩 */
+        .mk-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .mk-tag img {
+            height: 24px;
+            display: block;
+        }
+
         .kda-stats {
             font-size: 24px;
             font-weight: bold;
             letter-spacing: 1px;
             color: #eef2f8;
-        }
-
-        .kda-stats .kda-label {
-            font-size: 14px;
-            color: #6f7c92;
-            margin-left: 8px;
-            font-weight: normal;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .tags {
@@ -381,7 +391,8 @@
                     <span class="game-mode">{{item.gameType}}</span>
                 </div>
                 <div class="kda-stats">
-                    {{item.killCnt}} / {{item.deadCnt}} / {{item.assistCnt}}<span class="kda-label">KDA</span>
+                    {{item.killCnt}} / {{item.deadCnt}} / {{item.assistCnt}}
+                    {{each item.killTags k}}<span class="mk-tag"><img src="{{k.icon}}" alt="{{k.text}}" onerror="this.style.display='none'"></span>{{/each}}
                 </div>
                 <div class="tags">
                     {{if item.mvp.icon}}

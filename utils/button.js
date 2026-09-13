@@ -191,6 +191,32 @@ export default class Button {
   }
 
   /**
+   * 英雄详情
+   * @param {string} heroName 英雄名
+   * @param {string|number} id 营地ID
+   */
+  static heroDetail(heroName = '', id = '') {
+    const s = id ? String(id) : ''
+    const rows = []
+    if (heroName) {
+      rows.push([
+        { text: `${heroName}战绩`, callback: `#查战绩${heroName}` },
+        { text: `${heroName}战力`, callback: `#查战力${heroName}` }
+      ])
+      rows.push([
+        { text: `${heroName}皮肤`, callback: `#查皮肤${heroName}` },
+        { text: '常用英雄', callback: `#常用英雄${s}` }
+      ])
+    } else {
+      rows.push([
+        { text: '查战绩', input: '#查战绩' },
+        { text: '常用英雄', callback: `#常用英雄${s}` }
+      ])
+    }
+    return segment.button(...rows)
+  }
+
+  /**
    * 英雄相关（查战力/查皮肤互跳）
    * @param {string} heroName 英雄名
    */
