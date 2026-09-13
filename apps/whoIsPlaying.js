@@ -13,21 +13,32 @@
  * 「客户端在线」两组，后者的人没有英雄可显示。
  *
  * 所以它只覆盖「开过战绩推送或上下线提醒的人」——这正是想被看到的那批人，
- * 而且不给营地增加任何负载。反过来说，快照的新鲜度受推送的自适应退避影响：
- * 长时间离线的号会退到十分钟一轮，所以离线那组的时间戳可能偏旧，文案里标出来。
+ * 而且不给营地增加任何负载。反过来说，快照的新鲜度受推送的自适应退避影响，
+ * 离线越久查得越稀（正式订阅十分钟一轮，只采集的影子订阅半小时一轮），
+ * 所以快照可能偏旧，超时的那条在文案里标出来（阈值也按这两档分开，见下面的常量）。
  *
  * 英雄名走官网 herolist.json（getHeroNameMap，6 小时内存缓存），也不碰营地接口。
  *
  * 出图走 WhoIsPlaying.html（视觉与战报同源），渲染失败时回落到纯文字名单。
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL } from '../utils/pushStore.js'
+import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, isPureShadow } from '../utils/pushStore.js'
 import { membersOfGroup, isIndexReady, refreshGroupIndex } from '../utils/groupIndex.js'
 import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser } from '#utils'
 import { heroIconUrl } from '../utils/reportStore.js'
 
-/** 快照超过这个时长就在文案里标「数据较旧」，单位毫秒 */
+/** 快照超过这个时长就在文案里标「数据较旧」，单位毫秒。对着正式订阅那档退避封顶（十分钟一轮）定的 */
 const STALE_MS = 15 * 60 * 1000
+
+/**
+ * 影子订阅（只采集、不播报）的容忍时长，单独放宽一档。
+ *
+ * 它们那档退避封顶是 idleBackoffMax × 3（默认 30 分钟一轮，见 apps/gameRecordPush.js
+ * 的 SHADOW_BACKOFF_FACTOR），沿用 15 分钟会让离线那组**成片**顶着「数据较旧」——
+ * 满屏都是标记的时候，标记就不再是「这条可能不准」的信号了。
+ * ⚠️ 跟 SHADOW_BACKOFF_FACTOR 配套：主人把 idleBackoffMax 调大调小，两边都要跟着改。
+ */
+const SHADOW_STALE_MS = 35 * 60 * 1000
 
 /**
  * 「刚打完」的展示窗口：对局结束后这么久之内还单独列一组。
@@ -275,7 +286,7 @@ function buildRow (qq, sub, heroMap, now) {
     hasState,
     idleInGame,
     seenAt,
-    stale: seenAt > 0 && now - seenAt > STALE_MS,
+    stale: seenAt > 0 && now - seenAt > (isPureShadow(sub) ? SHADOW_STALE_MS : STALE_MS),
     // 新增展示字段：对局/在线时长、段位、刚打完
     gamingFor,
     onlineFor,

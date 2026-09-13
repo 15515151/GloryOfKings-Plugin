@@ -19,9 +19,18 @@ const CODE_RATE_LIMITED = -30107
  */
 export const MIN_REQUEST_GAP_MS = 1200
 
-/** 命中 -30107 后的冷却：60s 起步，冷却期间连续再命中则翻倍，封顶 10 分钟 */
+/**
+ * 命中 -30107 后的冷却：60s 起步，冷却期间连续再命中则翻倍，封顶 30 分钟。
+ *
+ * 封顶从 10 分钟提到 30 分钟是**照着实测日志定的**：连续命中的第 5 次之后
+ * 冷却稳定在 600s，而每 600s 一过、第一个请求又必然命中，于是「连续第 10 次」
+ * 一挂就是几小时下不来（2026-09-13 实测 13:44~19:14 一直卡在 10 次封顶）。
+ * 说明营地对「刚被限流又立刻来请求」是有惩罚续期的，10 分钟根本不够它忘掉我们。
+ * 首次命中仍是 60s（偶发一次不惩罚用户），只有连着命中才会一路涨到 30 分钟——
+ * 既然那段时间里请求本来就全在失败，安静半小时比一直去撩它更快恢复。
+ */
 const RATE_LIMIT_BASE_COOLDOWN_MS = 60 * 1000
-const RATE_LIMIT_MAX_COOLDOWN_MS = 10 * 60 * 1000
+const RATE_LIMIT_MAX_COOLDOWN_MS = 30 * 60 * 1000
 
 /**
  * 单次营地请求的超时。**只计「发车之后」**，不含排队等待——
@@ -118,6 +127,22 @@ class ApiService {
     }
     this.#rateLimitHits = 0
     this.#rateLimitUntil = 0
+  }
+
+  /**
+   * 现在是不是在频控冷却里。
+   *
+   * 给定时轮询用：冷却期内它整轮跳过，不再把每个订阅挨个撞一遍——
+   * 撞了也是白撞（`#assertNotRateLimited` 一律快速失败，一个请求都发不出去），
+   * 只是白抛一次错、白写一次订阅表。
+   */
+  isRateLimited() {
+    return Date.now() < this.#rateLimitUntil
+  }
+
+  /** 频控冷却还剩多少毫秒，不在冷却时为 0 */
+  rateLimitRemainingMs() {
+    return Math.max(0, this.#rateLimitUntil - Date.now())
   }
 
   /**

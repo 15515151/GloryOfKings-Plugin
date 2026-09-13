@@ -31,6 +31,7 @@ import {
   mergeSubState,
   disableSubFlag,
   isFlagOn,
+  isPureShadow,
   subGroups,
   withSubGroup,
   withoutSubGroup,
@@ -62,7 +63,7 @@ import { fetchBattleDetail, renderBattleDetail } from '../utils/battleDetailImag
 import { fetchRoleNames } from '../utils/roleName.js'
 import { getAllBindings } from '../utils/rankStore.js'
 import { membersOfGroup, groupsOfMember, isIndexReady, getGroupIndex, refreshGroupIndex } from '../utils/groupIndex.js'
-import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser } from '#utils'
+import { getCurrentId, getLocalImage, Button, shouldQuote, pickGroupSafe, resolveMemberName, isBlackUser, ApiService } from '#utils'
 import { Config } from '#components'
 
 /**
@@ -70,6 +71,44 @@ import { Config } from '#components'
  * 同一场战绩被两轮同时读到、各推一次。模块级变量足够——一个进程里只有一个 task 实例。
  */
 let running = false
+
+/**
+ * 一轮最多真发几次请求。
+ *
+ * 退避是**每个订阅各自计时**的，所以安静一阵子之后常常好几个订阅在同一轮里一起归零
+ * （2026-09-13 实测某轮 8 个订阅同时要查）。营地看的是短时间内的请求量，
+ * 这种齐发比「总量大」更容易把阈值打爆：一发命中、冷却 600s 过去，下一轮又是齐发，
+ * 于是每 10 分钟稳定吃一发 -30107，连续十几次下不来。
+ * 超出预算的订阅本轮不发请求，下一轮从停下的位置接着查（cursor）。
+ */
+const MAX_REQUESTS_PER_ROUND = 6
+
+/**
+ * 命中频控后先按「每轮只放一个请求」探几轮，确认真恢复了再放开。
+ *
+ * 冷却一过就全军出击，实测就是下一个 600s 冷却的开始：营地对「刚被限流又立刻回来」
+ * 是有惩罚续期的。探路的请求再命中就继续探，所以探测期会自己延长，
+ * 直到营地真的放行。代价是恢复后头几轮查得慢，但那时候本来也查不动。
+ */
+const RECOVER_PROBE_ROUNDS = 3
+
+/**
+ * 影子订阅（只给 #谁在打游戏 采集、不往任何群播报）的退避封顶倍数，
+ * 在 idleBackoffMax 之上再乘这一档：它一个群都不推，晚半小时知道某人还在离线没有代价，
+ * 而正式订阅晚一个封顶间隔才播上线就不像话了。活跃时两条路径都立刻回到高频，
+ * 所以放大只影响「一直没动静」的号。
+ * ⚠️ apps/whoIsPlaying.js 的 SHADOW_STALE_MS 跟这一档配套，改这里要一起看。
+ */
+const SHADOW_BACKOFF_FACTOR = 3
+
+/**
+ * 轮询游标：上一轮被预算挡下的位置。没有它的话每轮都从头遍历，
+ * 排在后面的订阅永远轮不到（前面的每次都用光预算）。
+ */
+let cursor = 0
+
+/** 频控恢复期还剩几轮，> 0 时每轮只放一个请求探路 */
+let recoverRounds = 0
 
 export class GameRecordPush extends plugin {
   constructor () {
@@ -584,11 +623,29 @@ export class GameRecordPush extends plugin {
       return
     }
 
+    // 频控冷却期整轮跳过。冷却期内每个订阅都会被 api 层快速失败，一个请求都发不出去，
+    // 却要挨个抛错、挨个写一遍订阅表（20 个订阅就是 20 次 YAML 读改写）；
+    // 更要紧的是不要去撩它——冷却一过就齐发一轮，正是下一个冷却的开始。
+    if (ApiService.isRateLimited()) {
+      logger.debug(`[王者推送] 营地频控冷却中（约 ${Math.ceil(ApiService.rateLimitRemainingMs() / 1000)} 秒），本轮 ${entries.length} 个订阅都不查`)
+      return
+    }
+
     running = true
     const heroMap = await getHeroNameMap()
+    // 恢复期每轮只放一个请求：冷却刚过时营地多半还在惩罚期内，发满预算等于立刻再吃一发
+    const budget = recoverRounds > 0 ? 1 : MAX_REQUESTS_PER_ROUND
+    const total = entries.length
+    const from = cursor % total
+    let sent = 0
+    // 下一轮从哪个下标接着查，空串 = 本轮所有人都轮过了、下轮从头开始
+    let next = ''
 
     try {
-      for (const [qq, sub] of entries) {
+      for (let i = 0; i < total; i += 1) {
+        const idx = (from + i) % total
+        const [qq, sub] = entries[idx]
+
         // 退避中：递减计数就走，注意**不能 sleep**——跳过的订阅没发请求，没必要错峰
         const skip = Number(sub?.skipTicks) || 0
         if (skip > 0) {
@@ -596,15 +653,38 @@ export class GameRecordPush extends plugin {
           continue
         }
 
+        // 预算用完：记住停在哪，下一轮从这里接着查（否则排在后面的永远轮不到）
+        if (sent >= budget) {
+          next = idx
+          break
+        }
+
         try {
           await this.checkOne(qq, sub, heroMap)
         } catch (error) {
           logger.error(`[王者推送] 检查 ${qq} 出错: ${error.message}`)
         }
+        sent += 1
+
+        // 这一发已经撞上频控：剩下的订阅一个都别试了，留到下一轮
+        if (ApiService.isRateLimited()) {
+          logger.warn(`[王者推送] 本轮命中营地频控，还剩 ${total - i - 1} 个订阅留到下一轮`)
+          next = (idx + 1) % total
+          break
+        }
+
         await sleep(REQUEST_INTERVAL)
       }
     } finally {
       running = false
+      cursor = next === '' ? 0 : next
+      // 命中就一直探（探测期会自己延长到营地真放行为止）；没命中才把恢复期倒数掉
+      if (ApiService.isRateLimited()) {
+        recoverRounds = RECOVER_PROBE_ROUNDS
+        logger.warn(`[王者推送] 进入频控恢复期：接下来 ${RECOVER_PROBE_ROUNDS} 轮每轮只查一个订阅`)
+      } else if (recoverRounds > 0) {
+        recoverRounds -= 1
+      }
     }
   }
 
@@ -695,7 +775,7 @@ export class GameRecordPush extends plugin {
       ...resolveNextCheck(sub, {
         active: isSubActive(state, data, Math.floor(nowMs / 1000)),
         nowMs,
-        maxMultiplier: readConfig().idleBackoffMax
+        maxMultiplier: backoffCap(sub)
       }),
       // 给 #谁在打游戏 用：那条指令一次营地请求都不发，只读这几个字段。
       // lastSeenAt 是本轮的观测时刻（判数据够不够新），lastGaming 是「此刻在不在对局中」。
@@ -1022,6 +1102,18 @@ function readConfig () {
 }
 
 /**
+ * 这个订阅的退避封顶倍数。影子订阅在配置值之上再放宽一档（见 SHADOW_BACKOFF_FACTOR）：
+ * 它不往任何群播报，晚半小时知道某人还在离线没有代价。
+ *
+ * @param {object} sub 订阅项
+ * @returns {number} 倍数，1 = 全程按 cron 轮询
+ */
+function backoffCap (sub) {
+  const cap = Math.max(1, Number(readConfig().idleBackoffMax) || DEFAULT_IDLE_BACKOFF_MAX)
+  return isPureShadow(sub) ? cap * SHADOW_BACKOFF_FACTOR : cap
+}
+
+/**
  * 本轮观测快照，写进订阅项供 #谁在打游戏 直接读，不额外发请求。
  *
  * 两个数据源都可能缺：只开战绩推送时没有 state，退避轮或 needBattleList 判否时没有 data。
@@ -1110,26 +1202,6 @@ function startingNewGame (start, prev) {
   if (!start) return false
   // prev.lastGamingStart 可能是数字（早期写法）或字符串，统一成字符串比
   return String(prev?.lastGamingStart ?? '') !== start
-}
-
-/**
- * 这条订阅是不是「纯采集的影子订阅」——没给任何群推任何东西，只攒在线状态快照。
- *
- * 退群清理只认这一类。判据是「三个播报开关全关」，而不是「有没有 groups」：
- * 用户开着 battle 但还没发过任何真实战绩轮次时 groups 也可能是空的，
- * 那种订阅是他明确要的，退群了也不该被我们删掉。
- *
- * daily / weekly / monthly 也要一起看：那三路推送同样共用这条订阅，
- * 只看 battle/online 会把「只开了日报」的人误判成影子。
- *
- * @param {object} sub 订阅项
- * @returns {boolean}
- */
-function isPureShadow (sub) {
-  if (!sub) return false
-  if (sub.battle === true || sub.online === true) return false
-  if (sub.daily === true || sub.weekly === true || sub.monthly === true) return false
-  return isFlagOn(sub, 'onlineStatus')
 }
 
 /** 索引里所有群号。影子订阅要扫「群里有哪些人」，得先有群的全集 */

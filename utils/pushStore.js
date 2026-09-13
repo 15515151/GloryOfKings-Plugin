@@ -184,6 +184,29 @@ export function hasAnyFlag (sub) {
 }
 
 /**
+ * 是不是「纯影子订阅」——只给 `#谁在打游戏` 采集在线状态，不往任何群播报。
+ *
+ * 判据是「一路会播报的推送都没开、但拿着 onlineStatus」。两类用途完全不同的订阅
+ * 混在同一张表、同一个轮询里，所以凡是「播报要及时」相关的取舍都要先过这一道：
+ * 影子晚半小时知道某人还在离线没有代价，正式订阅晚半小时播上线就不像话了。
+ * 退避封顶（apps/gameRecordPush.js 的 backoffCap）和图上「数据较旧」的阈值
+ * （apps/whoIsPlaying.js）都按它分档。
+ *
+ * 另有两条现成的用法别改坏：
+ * - **退群清理只删这一类**（gameRecordPush.js 的清理循环）。判据必须是「播报开关
+ *   全关」而不是「有没有 groups」——用户开着 battle、还没打过的号 groups 也可能是空的，
+ *   那是他明确要的，退群了也不该被我们删掉。
+ * - daily / weekly / monthly 要一起看：那三路同样共用这条订阅，
+ *   只判 battle/online 会把「只开了日报」的人误当成影子。
+ */
+export function isPureShadow (sub) {
+  if (!sub) return false
+  if (sub.battle === true || sub.online === true) return false
+  if (sub.daily === true || sub.weekly === true || sub.monthly === true) return false
+  return isFlagOn(sub, 'onlineStatus')
+}
+
+/**
  * 关掉一路推送。全部开关都关了才把整条订阅删掉，别留个空壳占着轮询名额。
  *
  * 判「是不是全关了」必须过 SUB_FLAGS 全集。早先这里只看 battle / online，
