@@ -68,10 +68,15 @@ class RateLimitError extends Error {
  * 新版营地接口需要额外的安全参数，因此这里统一处理鉴权头、encodeParam 和响应解密。
  */
 class ApiService {
-  /** 频控冷却截止时间戳（ms），0 表示不在冷却 */
-  #rateLimitUntil = 0
-  /** 冷却期间连续命中频控的次数，决定下一次冷却时长 */
-  #rateLimitHits = 0
+  /**
+   * 账号 userId -> 频控冷却截止时间戳（ms）。
+   *
+   * 按**账号**冷却，不是全局：多个全局账号轮询时，某个号被营地限流
+   * 不该把池里其他好号一起拖停——那个号单独进冷却、暂时从候选里跳过就行。
+   */
+  #rateLimitUntilByUser = new Map()
+  /** 账号 userId -> 该号冷却期间的连续命中次数，决定它下一次的冷却时长 */
+  #rateLimitHitsByUser = new Map()
   /** 全局串行队列的队尾 */
   #queueTail = Promise.resolve()
   /** 上次实际请求发出时刻 */
@@ -88,36 +93,65 @@ class ApiService {
   /* ------------------------------------------------------ 频控冷却与请求队列 */
 
   /**
-   * 冷却检查。账号池通常只有一个 token，-30107 后换号重试没有意义，
-   * 唯一有效的策略是全体调用方立刻停手等冷却——期间的新请求在这里快速失败，
-   * 不再打到营地接口加重频控。冷却过期或某次请求成功后自动恢复
+   * 这个账号还剩多少毫秒冷却（0 = 可正常使用）。
+   *
+   * 冷却按账号独立记，所以调用方能把「冷却中的号」从候选里挑出来跳过，
+   * 而不是让整个插件停摆。
    */
-  #assertNotRateLimited() {
-    if (Date.now() >= this.#rateLimitUntil) return
+  #rateLimitCooldownLeft(auth) {
+    const userId = this.#toString(auth?.userId)
+    if (!userId) {
+      return 0
+    }
 
-    const waitSec = Math.ceil((this.#rateLimitUntil - Date.now()) / 1000)
-    throw new RateLimitError(`营地接口操作频繁，冷却中（约 ${waitSec} 秒后自动恢复），请稍后再试`)
+    return Math.max(0, (this.#rateLimitUntilByUser.get(userId) || 0) - Date.now())
   }
 
-  /** 记录一次 -30107 命中，返回本次冷却毫秒数 */
-  #markRateLimited() {
-    this.#rateLimitHits = Math.min(this.#rateLimitHits + 1, 10)
+  /**
+   * 冷却检查：只看传进来的这个账号。
+   *
+   * ⚠️ 错误文案里**不能**出现「全局账号 / token / 鉴权 / 登录态 / 安全参数」这类词。
+   * 频控文案会被 formatUserFacingError 原样透给用户，一旦命中它那串敏感词正则，
+   * 用户看到的就是「请联系主人处理」，反而看不出是频控。
+   */
+  #assertNotRateLimited(auth) {
+    const waitMs = this.#rateLimitCooldownLeft(auth)
+    if (waitMs <= 0) return
+
+    const waitSec = Math.ceil(waitMs / 1000)
+    throw new RateLimitError(`该账号命中频控，冷却中（约 ${waitSec} 秒后自动恢复），请稍后再试`)
+  }
+
+  /** 记录一次 -30107 命中，只冷却触发它的那个账号，返回本次冷却毫秒数 */
+  #markRateLimited(auth) {
+    const userId = this.#toString(auth?.userId)
+    if (!userId) {
+      return 0
+    }
+
+    const hits = Math.min((this.#rateLimitHitsByUser.get(userId) || 0) + 1, 10)
+    this.#rateLimitHitsByUser.set(userId, hits)
+
     const cooldown = Math.min(
-      RATE_LIMIT_BASE_COOLDOWN_MS * Math.pow(2, this.#rateLimitHits - 1),
+      RATE_LIMIT_BASE_COOLDOWN_MS * Math.pow(2, hits - 1),
       RATE_LIMIT_MAX_COOLDOWN_MS
     )
-    this.#rateLimitUntil = Date.now() + cooldown
-    logger.warn(`[王者接口] 命中频控 -30107，进入 ${Math.round(cooldown / 1000)}s 冷却（连续第 ${this.#rateLimitHits} 次）`)
+    this.#rateLimitUntilByUser.set(userId, Date.now() + cooldown)
+
+    logger.warn(`[王者接口] 账号 ${this.#maskUserId(userId)} 命中频控 -30107，单独冷却 ${Math.round(cooldown / 1000)}s（连续第 ${hits} 次）`)
     return cooldown
   }
 
-  /** 任一请求成功即视为恢复，清空冷却与连续命中计数 */
-  #clearRateLimit() {
-    if (this.#rateLimitHits > 0) {
-      logger.mark('[王者接口] 频控已恢复，清除冷却')
+  /** 该账号请求成功即视为它自己恢复，只清它的冷却与连续命中计数 */
+  #clearRateLimit(auth) {
+    const userId = this.#toString(auth?.userId)
+    if (!userId) return
+
+    if ((this.#rateLimitHitsByUser.get(userId) || 0) > 0) {
+      logger.mark(`[王者接口] 账号 ${this.#maskUserId(userId)} 频控已恢复，清除冷却`)
     }
-    this.#rateLimitHits = 0
-    this.#rateLimitUntil = 0
+    this.#rateLimitHitsByUser.delete(userId)
+    this.#rateLimitUntilByUser.delete(userId)
   }
 
   /**
@@ -149,18 +183,20 @@ class ApiService {
    * 三十多秒，期间全群所有查询都在后面干等。现在退避和换号都发生在名额之外，
    * 别人的请求可以正常插进空出来的节奏里。
    *
-   * 冷却检查放在拿到名额之后：排队期间冷却可能已被前面的请求触发，
-   * 这时立刻快速失败，不再打到营地接口加重频控。
+   * 冷却检查放在拿到名额之后：排队期间这个账号可能已被别的请求打到限流，
+   * 这时立刻快速失败，不再打到营地接口加重频控。检查是**按账号**做的，
+   * 传进来的 auth 决定查谁的冷却。
    *
    * 超时表也建在名额之后（见 REQUEST_TIMEOUT_MS 的注释）。返回的 `release`
    * 必须由调用方在**读完 response body 之后**调用：body 是流式的，
    * 提前 clearTimeout 会让「连上了但一直不给完整响应」这种情况失去保护。
    *
+   * @param {object|null} auth  本次请求使用的账号，冷却按它来查；不传则不查冷却
    * @returns {Promise<{response: Response, release: () => void}>}
    */
-  async #gatedFetch(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  async #gatedFetch(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS, auth = null) {
     await this.#acquireSlot()
-    this.#assertNotRateLimited()
+    this.#assertNotRateLimited(auth)
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -475,7 +511,7 @@ class ApiService {
     if (candidate?.source === 'global') {
       const state = authStore.markAuthFailure(candidate?.auth?.userId, message)
       if (state?.newlyInvalid) {
-        void this.#notifyGlobalAuthInvalid(message)
+        void this.#notifyGlobalAuthInvalid(message, candidate)
       }
       return
     }
@@ -487,16 +523,20 @@ class ApiService {
     authStore.markAuthSuccess(candidate?.auth?.userId)
   }
 
-  async #notifyGlobalAuthInvalid(message = '') {
+  async #notifyGlobalAuthInvalid(message = '', candidate = null) {
     try {
       if (typeof Bot !== 'object' || typeof Bot.sendMasterMsg !== 'function') {
         return
       }
 
+      // 全局账号可能有好几个（轮询池），通知必须点明是哪一个挂了，
+      // 否则主人收到「某个全局账号失效」也不知道该重扫哪个码。
+      const label = candidate?.label || '全局账号'
       const sanitizedMessage = this.#sanitizeAuthMessage(message)
       const lines = [
-        '王者插件默认全局账号登录态已失效，后续请求将自动跳过该账号。',
+        `王者插件的${label} 登录态已失效，后续请求会自动跳过该账号。`,
         sanitizedMessage ? `失效原因：${sanitizedMessage}` : '',
+        '池子里还有其它可用全局账号的话，请求会继续用它们。',
         '可使用【#营地wx全局登录】或【#营地QQ全局登录】重新扫码更新全局 token。'
       ].filter(Boolean)
 
@@ -817,7 +857,7 @@ class ApiService {
           method,
           headers,
           body: requestBody
-        })
+        }, REQUEST_TIMEOUT_MS, auth)
 
         let data
         try {
@@ -847,26 +887,64 @@ class ApiService {
    * 通用请求方法。
    * 统一负责构造新版营地请求头、超时控制、重试和错误处理。
    *
-   * 冷却期内直接快速失败，连队都不排。真正的错峰在 #gatedFetch 里按「每次 fetch」
-   * 做，而不是把整条候选账号循环 × 重试链塞进队列——那样一个慢请求会独占队头几十秒。
+   * 这里不做频控预检：冷却已经按账号记，此刻还没选账号，判断不了该查谁。
+   * 冷却中的号由 #runWithCandidates 逐个跳过，而跳过发生在发请求之前，
+   * 和原先「连队都不排」的效果一致。
+   *
+   * 真正的错峰在 #gatedFetch 里按「每次 fetch」做，而不是把整条候选账号循环 ×
+   * 重试链塞进队列——那样一个慢请求会独占队头几十秒。
    */
   async #request(method, endpoint, body = null, additionalHeaders = {}, retries = 2, targetUserId = '', requesterBotUserId = '') {
-    this.#assertNotRateLimited()
     return this.#requestWithCandidates(method, endpoint, body, additionalHeaders, retries, targetUserId, requesterBotUserId)
   }
 
-  async #requestWithCandidates(method, endpoint, body = null, additionalHeaders = {}, retries = 2, targetUserId = '', requesterBotUserId = '') {
-    const url = `${this.baseUrls.main}${endpoint}`
-    const candidates = this.#getAuthCandidates(targetUserId, requesterBotUserId)
-
-    if (!candidates.length) {
-      throw new AuthConfigError('未找到可用的营地登录态，请先完成营地登录，或在账号池中配置一个可用的全局账号')
-    }
-
+  /**
+   * 候选账号循环的公共骨架。
+   *
+   * 依次用候选账号发请求：鉴权类失败就标记该账号并回退到下一个，全部失败则抛出最后一个错误。
+   * 真正有差异的只有两件事——**怎么发请求**、**业务错误码怎么判定**，分别由 execute 和
+   * onBusinessCode 注入；循环骨架、鉴权失败回退、频控冷却、成功后的状态更新两处完全一致。
+   *
+   * 候选列表的顺序由 authStore.getAuthCandidates 决定：多个全局账号时它是轮询旋转过的
+   * （本轮该用的号在队首），所以「换号重试」同时也是「轮换到下一个账号」。
+   *
+   * @param {object} opts
+   * @param {string} opts.url  实际请求地址（已含 baseUrl 前缀），只用于兜底日志
+   * @param {Array} opts.candidates  #getAuthCandidates 的结果
+   * @param {object} opts.context  { endpoint, method, targetUserId, requesterBotUserId }，用于日志
+   * @param {(candidate: object) => Promise<any>} opts.execute  用指定候选账号发一次请求，返回响应 data
+   * @param {(data: any, candidate: object, info: { isLast: boolean }) => object} opts.onBusinessCode
+   *        判定响应 data 该怎么处理，返回下面四种之一：
+   *        - { action: 'success' }              正常数据，走成功路径
+   *        - { action: 'return', value }        原样交还给调用方（既不算成功也不算失败）
+   *        - { action: 'retry', error, mark, reason }  当失败处理，mark 为真时标记该账号失效；
+   *          还有候选就继续，没有则抛出 error
+   *        - { action: 'rate-limit' }           命中频控 -30107
+   * @param {object} [opts.errorLogExtra]  兜底 logger.error 的附加字段
+   */
+  async #runWithCandidates({ url, candidates, context = {}, execute, onBusinessCode, errorLogExtra = {} }) {
+    const { endpoint, method, targetUserId = '', requesterBotUserId = '' } = context
     let lastError = null
 
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]
+      const isLast = index >= candidates.length - 1
+
+      // 这个号还在频控冷却里：跳过它，改用下一个候选，不占请求名额。
+      //
+      // 必须在 try 之前判：冷却时 #gatedFetch 会抛 RateLimitError，一旦落到下面的
+      // catch，会被当作「非鉴权错误」直接 break 掉整个循环，后面的候选就没机会了。
+      const cooldownLeft = this.#rateLimitCooldownLeft(candidate.auth)
+      if (cooldownLeft > 0) {
+        lastError = new RateLimitError(`该账号命中频控，冷却中（约 ${Math.ceil(cooldownLeft / 1000)} 秒后自动恢复），请稍后再试`)
+        logger.warn(`[王者接口] ${candidate.label} 仍在频控冷却中，暂时跳过它`)
+
+        if (!isLast) {
+          continue
+        }
+
+        break
+      }
 
       try {
         logger.debug('[王者接口] 尝试使用鉴权账号发起请求', {
@@ -886,59 +964,58 @@ class ApiService {
         })
 
         this.#assertAuthReady(candidate.auth)
-        const data = await this.#requestWithAuth(method, url, body, additionalHeaders, retries, candidate.auth, {
-          endpoint,
-          method,
-          targetUserId: this.#toString(targetUserId),
-          requesterBotUserId: this.#toString(requesterBotUserId)
-        })
+        const data = await execute(candidate)
+        const decision = onBusinessCode(data, candidate, { isLast })
 
-        if (this.#isAuthFailureResponse(data)) {
-          lastError = new AuthConfigError(`${candidate.label} 返回疑似登录失效响应: ${data.returnMsg || data.message || data.msg}`)
-          this.#markCandidateAuthFailure(candidate, lastError.message)
+        if (decision.action === 'return') {
+          return decision.value
+        }
 
-          if (index < candidates.length - 1) {
-            logger.warn(`[王者接口] ${candidate.label} 疑似失效，尝试回退到下一个账号`, {
-              endpoint,
-              targetUserId,
-              requesterBotUserId,
-              returnCode: data.returnCode,
-              returnMsg: data.returnMsg || data.message || data.msg
-            })
-            continue
+        if (decision.action === 'rate-limit') {
+          // 只冷却触发频控的这个号，然后换下一个候选——池子里还有好号就不该整体停摆
+          const cooldown = this.#markRateLimited(candidate.auth)
+          lastError = new RateLimitError(`营地接口操作频繁(-30107)，该账号已冷却 ${Math.round(cooldown / 1000)} 秒，请稍后再试`)
+
+          if (isLast) {
+            break
           }
 
-          logger.warn(`[王者接口] ${candidate.label} 疑似失效，且没有更多可回退账号`, {
+          logger.warn(`[王者接口] ${candidate.label} 命中频控，暂时禁用该账号，改用下一个`, {
             endpoint,
             targetUserId,
             requesterBotUserId,
-            returnCode: data.returnCode,
-            returnMsg: data.returnMsg || data.message || data.msg
+            cooldownMs: cooldown
           })
-          throw lastError
+          continue
         }
 
-        // 业务错误码（频控 -30107、主页隐藏 -10107 等）：账号本身没问题，换账号重试没有意义，
-        // 也不算「请求成功」。
-        // -30107 直接触发全局冷却并抛错，让所有调用方立刻停手等恢复（单账号下重试只会加重频控）；
-        // 其它错误码响应原样交给上层按 returnCode 自行分流
-        // （pushStore / rankStore 会对频控退避重试，myKingHomepage 会对隐藏主页提示）。
-        const businessCode = Number(data?.returnCode)
-        if (Number.isFinite(businessCode) && businessCode !== 0) {
-          if (businessCode === CODE_RATE_LIMITED) {
-            const cooldown = this.#markRateLimited()
-            throw new RateLimitError(`营地接口操作频繁(-30107)，冷却 ${Math.round(cooldown / 1000)}s 后自动恢复，请稍后再试`)
+        if (decision.action === 'retry') {
+          lastError = decision.error
+
+          if (decision.mark) {
+            this.#markCandidateAuthFailure(candidate, decision.error.message)
           }
 
-          logger.warn(`[王者接口] ${candidate.label} 返回业务错误码 ${businessCode}: ${data.returnMsg || data.message || ''}`.trim(), {
+          logger.warn(`[王者接口] ${candidate.label} ${decision.reason || '鉴权异常'}，${isLast ? '且没有更多可回退账号' : '尝试回退到下一个账号'}`, {
             endpoint,
-            targetUserId: this.#toString(targetUserId),
-            requesterBotUserId: this.#toString(requesterBotUserId)
+            targetUserId,
+            requesterBotUserId,
+            error: decision.error.message
           })
-          return data
+
+          // 最后一轮刻意 break 而不是 throw：抛出去会被下面自己的 catch 接住，
+          // 把同一个账号同一原因再标记一次，让 authErrorCount 白涨。
+          // 直接跳出，交给循环外统一抛最后一个错误。
+          if (isLast) {
+            break
+          }
+
+          continue
         }
 
-        this.#clearRateLimit()
+        // 成功。只清这个号自己的冷却——冷却是按账号记的，
+        // 这个号能用不代表池里其他号也解除了限制。
+        this.#clearRateLimit(candidate.auth)
         this.#markCandidateAuthSuccess(candidate)
 
         logger.debug('[王者接口] 请求成功，当前使用鉴权账号', {
@@ -957,7 +1034,19 @@ class ApiService {
       } catch (error) {
         lastError = error
 
-        if (index < candidates.length - 1 && this.#isAuthRelatedError(error)) {
+        // 这个号在这轮里被标了冷却（典型是排队期间另一个请求刚把它打到限流，
+        // #gatedFetch 里的 #assertNotRateLimited 于是抛了出来）：换下一个候选，
+        // 别因为一个号被限流就中断整个循环。
+        if (!isLast && error instanceof RateLimitError) {
+          logger.warn(`[王者接口] ${candidate.label} 已被限流，改用下一个账号`, {
+            endpoint,
+            targetUserId,
+            requesterBotUserId
+          })
+          continue
+        }
+
+        if (!isLast && this.#isAuthRelatedError(error)) {
           this.#markCandidateAuthFailure(candidate, error.message)
           logger.warn(`[王者接口] ${candidate.label} 请求失败，尝试回退到下一个账号`, {
             endpoint,
@@ -980,12 +1069,69 @@ class ApiService {
       logger.error(`API请求失败: ${lastError.message}`, {
         url,
         method,
-        body: JSON.stringify(body),
         targetUserId,
-        requesterBotUserId
+        requesterBotUserId,
+        ...errorLogExtra
       })
       throw lastError
     }
+  }
+
+  async #requestWithCandidates(method, endpoint, body = null, additionalHeaders = {}, retries = 2, targetUserId = '', requesterBotUserId = '') {
+    const url = `${this.baseUrls.main}${endpoint}`
+    const candidates = this.#getAuthCandidates(targetUserId, requesterBotUserId)
+
+    if (!candidates.length) {
+      throw new AuthConfigError('未找到可用的营地登录态，请先完成营地登录，或在账号池中配置一个可用的全局账号')
+    }
+
+    return this.#runWithCandidates({
+      url,
+      candidates,
+      context: { endpoint, method, targetUserId, requesterBotUserId },
+      // 主站接口的兜底日志历来带 body，保持原样
+      errorLogExtra: { body: JSON.stringify(body) },
+      execute: candidate => this.#requestWithAuth(method, url, body, additionalHeaders, retries, candidate.auth, {
+        endpoint,
+        method,
+        targetUserId: this.#toString(targetUserId),
+        requesterBotUserId: this.#toString(requesterBotUserId)
+      }),
+      onBusinessCode: (data, candidate) => {
+        const businessCode = Number(data?.returnCode)
+
+        // 频控必须**最先**判。它的 returnMsg 有时也带「登录」「操作频繁」这类字样，
+        // 若排在 #isAuthFailureResponse 后面，就会被误判成登录失效，
+        // 把这个该进冷却的号错标成 authInvalid。
+        if (businessCode === CODE_RATE_LIMITED) {
+          return { action: 'rate-limit' }
+        }
+
+        // 疑似登录失效响应：标记这个号后换下一个
+        if (this.#isAuthFailureResponse(data)) {
+          return {
+            action: 'retry',
+            mark: true,
+            reason: '疑似失效',
+            error: new AuthConfigError(`${candidate.label} 返回疑似登录失效响应: ${data.returnMsg || data.message || data.msg}`)
+          }
+        }
+
+        // 业务错误码（主页隐藏 -10107 等）：账号本身没问题，换账号重试没有意义，
+        // 也不算「请求成功」。原样交给上层按 returnCode 自行分流
+        // （myKingHomepage 会对隐藏主页提示）。
+        if (Number.isFinite(businessCode) && businessCode !== 0) {
+          logger.warn(`[王者接口] ${candidate.label} 返回业务错误码 ${businessCode}: ${data.returnMsg || data.message || ''}`.trim(), {
+            endpoint,
+            targetUserId: this.#toString(targetUserId),
+            requesterBotUserId: this.#toString(requesterBotUserId)
+          })
+          return { action: 'return', value: data }
+        }
+
+        return { action: 'success' }
+      }
+    })
   }
 
   async #makeAuthRequest(endpoint, body, targetUserId = '', requesterBotUserId = '') {
@@ -1216,7 +1362,7 @@ class ApiService {
           method: 'POST',
           headers,
           body
-        })
+        }, REQUEST_TIMEOUT_MS, auth)
 
         let text
         try {
@@ -1256,7 +1402,7 @@ class ApiService {
   }
 
   async #requestGameForm(endpoint, extraFields = {}, targetUserId = '', requesterBotUserId = '', retries = 2) {
-    this.#assertNotRateLimited()
+    // 同 #request：频控按账号记，这里还没选账号，预检交给 #runWithCandidates
     return this.#requestGameFormWithCandidates(endpoint, extraFields, targetUserId, requesterBotUserId, retries)
   }
 
@@ -1268,73 +1414,42 @@ class ApiService {
       throw new AuthConfigError('未找到可用的营地登录态，请先完成营地登录，或在账号池中配置一个可用的全局账号')
     }
 
-    let lastError = null
-
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]
-
-      try {
-        this.#assertAuthReady(candidate.auth)
-        const body = this.#buildGameFormBody(candidate.auth, extraFields)
-        const data = await this.#fetchGameForm(url, candidate.auth, body, retries, {
+    return this.#runWithCandidates({
+      url,
+      candidates,
+      context: { endpoint, method: 'POST', targetUserId, requesterBotUserId },
+      execute: candidate => this.#fetchGameForm(
+        url,
+        candidate.auth,
+        // 表单体里含 token/userId/gameRoleId，每个候选账号都得现建一份
+        this.#buildGameFormBody(candidate.auth, extraFields),
+        retries,
+        {
           endpoint,
           method: 'POST',
           targetUserId: this.#toString(targetUserId),
           requesterBotUserId: this.#toString(requesterBotUserId)
-        })
-
+        }
+      ),
+      onBusinessCode: (data, candidate) => {
         const returnCode = Number(data?.returnCode)
-        if (Number.isFinite(returnCode) && returnCode !== 0) {
-          if (returnCode === CODE_RATE_LIMITED) {
-            const cooldown = this.#markRateLimited()
-            throw new RateLimitError(`营地接口操作频繁(-30107)，冷却 ${Math.round(cooldown / 1000)}s 后自动恢复，请稍后再试`)
-          }
-
-          lastError = new AuthConfigError(`${candidate.label} 返回错误码 ${returnCode}: ${data.returnMsg || data.message || ''}`.trim())
-
-          if (this.#isAuthFailureResponse(data) || this.#isAuthFailureResponse({ returnMsg: String(returnCode) })) {
-            this.#markCandidateAuthFailure(candidate, lastError.message)
-          }
-
-          if (index < candidates.length - 1) {
-            logger.warn(`[王者接口] ${candidate.label} 皮肤墙请求返回错误码，尝试回退下一个账号`, {
-              endpoint,
-              targetUserId,
-              returnCode
-            })
-            continue
-          }
-
-          throw lastError
+        if (!Number.isFinite(returnCode) || returnCode === 0) {
+          return { action: 'success' }
         }
 
-        this.#markCandidateAuthSuccess(candidate)
-        return data
-      } catch (error) {
-        lastError = error
-
-        if (index < candidates.length - 1 && this.#isAuthRelatedError(error)) {
-          this.#markCandidateAuthFailure(candidate, error.message)
-          logger.warn(`[王者接口] ${candidate.label} 皮肤墙请求失败，尝试回退下一个账号`, {
-            endpoint,
-            targetUserId,
-            error: error.message
-          })
-          continue
+        if (returnCode === CODE_RATE_LIMITED) {
+          return { action: 'rate-limit' }
         }
 
-        if (this.#isAuthRelatedError(error)) {
-          this.#markCandidateAuthFailure(candidate, error.message)
+        // 皮肤墙的错误响应没有统一的「登录失效」文案，所以额外拿错误码本身当 returnMsg 再判一次
+        return {
+          action: 'retry',
+          reason: '皮肤墙请求返回错误码',
+          error: new AuthConfigError(`${candidate.label} 返回错误码 ${returnCode}: ${data.returnMsg || data.message || ''}`.trim()),
+          mark: this.#isAuthFailureResponse(data) || this.#isAuthFailureResponse({ returnMsg: String(returnCode) })
         }
-
-        break
       }
-    }
-
-    if (lastError) {
-      logger.error(`API请求失败: ${lastError.message}`, { url, method: 'POST', targetUserId, requesterBotUserId })
-      throw lastError
-    }
+    })
   }
 
   /** 获取赛季页数据 */

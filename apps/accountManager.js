@@ -624,7 +624,7 @@ export class AccountManager extends plugin {
       mode: 'global',
       qrPromptLines: [
         `请扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后会直接更新默认全局账号的 token 和鉴权信息。'
+        '\n登录成功后这个号会写入全局账号池；池中有多个全局账号时，请求会在它们之间自动轮询。'
       ]
     })
   }
@@ -702,7 +702,7 @@ export class AccountManager extends plugin {
       mode: 'global',
       qrPromptLines: [
         `请用手机 QQ 扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后会直接更新默认全局账号的 token 和鉴权信息。'
+        '\n登录成功后这个号会写入全局账号池；池中有多个全局账号时，请求会在它们之间自动轮询。'
       ]
     })
   }
@@ -777,16 +777,23 @@ export class AccountManager extends plugin {
   async finishGlobalWechatLogin(e, result) {
     const account = result.account || {}
     const savedAccount = authStore.upsertGlobalAccount(account)
+    // 全局账号是可以有多个的（轮询池），所以扫码后要报当前池子大小，
+    // 否则主人扫第二个号时会以为把第一个覆盖了。
+    const globalCount = authStore.listAccounts().filter(item => item.isGlobalDefault).length
 
-    logger.info('[营地全局账号] 已通过扫码更新默认全局账号', {
+    logger.info('[营地全局账号] 已通过扫码写入全局账号池', {
       userId: savedAccount.userId,
-      nickname: savedAccount.nickname || savedAccount.userName || ''
+      nickname: savedAccount.nickname || savedAccount.userName || '',
+      globalCount
     })
 
     await e.reply([
-      '默认全局账号已更新。',
+      `全局账号已写入账号池（当前 ${globalCount} 个）。`,
       `\n营地ID：${savedAccount.userId || '未获取'}`,
       `\n昵称：${savedAccount.nickname || savedAccount.userName || '未命名'}`,
+      globalCount > 1
+        ? `\n请求会在这 ${globalCount} 个全局账号之间轮换，摊平单号的请求量。`
+        : '\n再用另一个微信/QQ 营地账号执行一次本指令，它就会加入轮询池。',
       '\n有效期约 30 天，失效了重发这条指令。'
     ])
   }
@@ -940,7 +947,7 @@ export class AccountManager extends plugin {
     if (skippedGlobalAccounts.length) {
       lines.push(
         removedAccounts.length ? '' : '本次未删除任何账号。',
-        `已跳过 ${skippedGlobalAccounts.length} 个失效的默认全局账号，失效标记会保留，后续可通过【#营地wx全局登录】/【#营地QQ全局登录】或锅巴更新后恢复。`
+        `已跳过 ${skippedGlobalAccounts.length} 个失效的全局账号，失效标记会保留，后续可通过【#营地wx全局登录】/【#营地QQ全局登录】或锅巴更新后恢复。`
       )
     }
 

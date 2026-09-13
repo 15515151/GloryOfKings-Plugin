@@ -114,14 +114,8 @@ export class MyKingHomepage extends plugin {
         continue
       }
 
-      if (profileData.returnCode === -30107) {
-        if (IDs.length === 1) {
-          await e.reply('营地接口操作频繁，请稍后重试')
-        } else {
-          pushFailure(ID, '营地接口操作频繁，请稍后重试')
-        }
-        continue
-      }
+      // 频控（-30107）走不到这里：getProfile 命中频控时是抛错的，
+      // 已被上面的 catch 接走，由 formatUserFacingError 转成对用户友好的提示。
 
       if (profileData.returnCode === -10107) {
         if (IDs.length === 1) {
