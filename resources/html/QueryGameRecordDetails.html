@@ -561,6 +561,20 @@
             font-weight: bold;
         }
 
+        /* 「全场最高」图标行（营地那套剑 / 头盔 / 城堡 / S）。
+           ★ 是就地标在对应数据旁边，这一行是「拿了几个最高」的汇总，两者互补 */
+        .max-tags {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-bottom: 8px;
+        }
+
+        .max-tags img {
+            height: 22px;
+            display: block;
+        }
+
         /* 「全场最高」标记（maxXXX 字段）。用 ★ 而不是文字标签：
            一行要挂四五个标记，「最高」两个字乘四就把细项行顶到换行 */
         .top-star {
@@ -862,6 +876,11 @@
                                 {{if item.battleStats.ctrlText}}<span class="item">控制<span class="val">{{item.battleStats.ctrlText}}</span>{{if item.battleStats.maxCtrlTime}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                                 {{if item.battleStats.soldierText}}<span class="item">补刀<span class="val">{{item.battleStats.soldierText}}</span>{{if item.battleStats.maxKillSoldier}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                             </div>
+                            {{if item.battleStats.maxTags && item.battleStats.maxTags.length}}
+                            <div class="max-tags">
+                                {{each item.battleStats.maxTags tag}}<img src="{{tag.icon}}" alt="{{tag.text}}" onerror="this.style.display='none'">{{/each}}
+                            </div>
+                            {{/if}}
                             <div class="equipment-list">
                                 <div class="equipment-item"><img src="{{item.battleRecords.skill.skillIcon}}" alt="技能"></div>
                                 {{each item.battleRecords.finalEquips equip}}
@@ -902,6 +921,11 @@
                                 {{if item.battleStats.ctrlText}}<span class="item">控制<span class="val">{{item.battleStats.ctrlText}}</span>{{if item.battleStats.maxCtrlTime}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                                 {{if item.battleStats.soldierText}}<span class="item">补刀<span class="val">{{item.battleStats.soldierText}}</span>{{if item.battleStats.maxKillSoldier}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                             </div>
+                            {{if item.battleStats.maxTags && item.battleStats.maxTags.length}}
+                            <div class="max-tags">
+                                {{each item.battleStats.maxTags tag}}<img src="{{tag.icon}}" alt="{{tag.text}}" onerror="this.style.display='none'">{{/each}}
+                            </div>
+                            {{/if}}
                             <div class="equipment-list">
                                 <div class="equipment-item"><img src="{{item.battleRecords.skill.skillIcon}}" alt="技能"></div>
                                 {{each item.battleRecords.finalEquips equip}}
@@ -952,6 +976,11 @@
                                 {{if item.battleStats.ctrlText}}<span class="item">控制<span class="val">{{item.battleStats.ctrlText}}</span>{{if item.battleStats.maxCtrlTime}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                                 {{if item.battleStats.soldierText}}<span class="item">补刀<span class="val">{{item.battleStats.soldierText}}</span>{{if item.battleStats.maxKillSoldier}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                             </div>
+                            {{if item.battleStats.maxTags && item.battleStats.maxTags.length}}
+                            <div class="max-tags">
+                                {{each item.battleStats.maxTags tag}}<img src="{{tag.icon}}" alt="{{tag.text}}" onerror="this.style.display='none'">{{/each}}
+                            </div>
+                            {{/if}}
                             <div class="equipment-list">
                                 <div class="equipment-item"><img src="{{item.battleRecords.skill.skillIcon}}" alt="技能"></div>
                                 {{each item.battleRecords.finalEquips equip}}
@@ -992,6 +1021,11 @@
                                 {{if item.battleStats.ctrlText}}<span class="item">控制<span class="val">{{item.battleStats.ctrlText}}</span>{{if item.battleStats.maxCtrlTime}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                                 {{if item.battleStats.soldierText}}<span class="item">补刀<span class="val">{{item.battleStats.soldierText}}</span>{{if item.battleStats.maxKillSoldier}}<span class="top-star">★</span>{{/if}}</span>{{/if}}
                             </div>
+                            {{if item.battleStats.maxTags && item.battleStats.maxTags.length}}
+                            <div class="max-tags">
+                                {{each item.battleStats.maxTags tag}}<img src="{{tag.icon}}" alt="{{tag.text}}" onerror="this.style.display='none'">{{/each}}
+                            </div>
+                            {{/if}}
                             <div class="equipment-list">
                                 <div class="equipment-item"><img src="{{item.battleRecords.skill.skillIcon}}" alt="技能"></div>
                                 {{each item.battleRecords.finalEquips equip}}

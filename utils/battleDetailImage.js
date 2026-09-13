@@ -148,6 +148,34 @@ export function buildKillTags (item) {
 }
 
 /**
+ * 「全场最高」的六个图标（击杀 / 输出 / 推塔 / 经济 / 对英雄伤害 / 承伤）。
+ *
+ * 接口给的是**标志位**（`battleStats` 里 `maxKill` 那六个，值 1/0），谁最高谁是 1。
+ *
+ * 图标出自营地 apk 的 **RN bundle**（`assets/bundles/battle.zip` 里的 `battle_score_max*.png`），
+ * **不是** Flutter 那套 `flutter_assets` —— 照 `flutter_assets` 找了一整轮全落空，
+ * 连上面那批 `battle_score_*kill` 连杀图标也在这个 RN 包里。别再去 Flutter 那边翻。
+ *
+ * 补刀 / 参团 / 控制这三项没有对应图标，继续用模板里原有的 `★` 就地标，不硬凑。
+ *
+ * @param {object} stats `battleStats`
+ * @returns {Array<{icon: string, text: string}>} 没拿最高则空数组
+ */
+export function buildMaxTags (stats) {
+  const fields = [
+    ['maxKill', 'max_kill.png', '击杀最高'],
+    ['maxHurt', 'max_hurt.png', '输出最高'],
+    ['maxTower', 'max_tower.png', '推塔最高'],
+    ['maxMoney', 'max_money.png', '经济最高'],
+    ['maxHeroHurt', 'max_hero_hurt.png', '对英雄伤害最高'],
+    ['maxBeheroHurt', 'max_be_hurt.png', '承伤最高']
+  ]
+  return fields
+    .filter(([key]) => Number(stats?.[key]))
+    .map(([, icon, text]) => ({ icon: localImg(icon), text }))
+}
+
+/**
  * 详情里的玩家数据是不是齐了。
  *
  * 对局刚结束时接口会「少人」：战绩列表已经能查到这一局（所以推送被触发），
@@ -258,6 +286,8 @@ export async function renderBattleDetail ({ head, battle, redTeam, blueTeam, red
       // 存成数字（不带 %），模板才好按它分级配色，跟 gradeGame 的写法保持一致
       const hurt = Number(bs.totalHeroHurtCnt) || 0
       bs.heroHurtRate = teamHurt > 0 && hurt > 0 ? Math.round((hurt / teamHurt) * 100) : 0
+      // 全场最高的六个图标（击杀/输出/推塔/经济/对英雄伤害/承伤）
+      bs.maxTags = buildMaxTags(bs)
       decorateExtraStats(bs)
     }
   }
