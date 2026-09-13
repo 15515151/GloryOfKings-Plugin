@@ -6,17 +6,25 @@
   <title>英雄详情</title>
   <link rel="stylesheet" href="{{_res_path}}css/BattleReport.css">
   <style>
-    /* 三格概览（.stat-grid 默认四格，这里只有一个英雄的三个数） */
-    .stat-grid.three { grid-template-columns: repeat(3, 1fr); }
+    /* 三格概览（.stat-grid 默认四格，这里只有一个英雄的三个数）。
+       底色必须**做实**：公共样式里 .stat-grid 垫了一层白 0.07（格子之间那 1px 的缝就靠它显形），
+       .stat-cell 又是 0.5 半透明 —— 两层叠起来比卡片本身还亮，底下的模糊背景图会透上来，
+       看着像「遮罩没盖住」。这里两层都换成实色，色值取自卡片区域实测的 RGB(20,26,37)；
+       只留比卡片略深一档的格子，分隔靠明度差而不是那道白缝。 */
+    .stat-grid.three { grid-template-columns: repeat(3, 1fr); background: #141a25; }
+    .stat-grid.three .stat-cell { background: #0e1420; }
 
-    /* 英雄头图：立绘当背景，左边压名字和称号，靠暗色渐变保证可读 */
+    /* 英雄头图：立绘当背景，左边压名字和称号，靠暗色渐变保证可读。
+       ⚠️ 这里**不能加 border-bottom**：那条 1px 的 rgba(255,255,255,0.08) 在
+       body 的 scale(3) 下会变成一条横贯整卡的明显亮缝，而立绘的遮罩 ::after 是
+       `inset: 0`（只覆盖 padding box、不含 border），压根压不暗它 ——
+       出来就是「遮罩没盖全」的样子。头图和下面的三格靠明度差分隔就够了。 */
     .hero-hero {
       position: relative;
       height: 250px;
       background: linear-gradient(100deg, rgba(120,140,190,0.25), rgba(30,40,70,0.6));
       background-size: cover;
       background-position: center 22%;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
     }
     .hero-hero::after {
       content: "";
