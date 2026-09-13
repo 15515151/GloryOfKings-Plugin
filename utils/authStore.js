@@ -94,10 +94,7 @@ function maskValue(value, keepStart = 6, keepEnd = 4) {
 
 class AuthStore {
   #getDefaultPool() {
-    return {
-      accounts: {},
-      sharedIds: []
-    }
+    return { accounts: {} }
   }
 
   #getDefaultUserData() {
@@ -146,9 +143,6 @@ class AuthStore {
   #normalizeAccount(account = {}, existing = {}) {
     const userId = normalizeUserId(account.userId || existing.userId)
     const timestamp = new Date().toISOString()
-    const shared = typeof account.shared === 'boolean'
-      ? account.shared
-      : Boolean(existing.shared)
     const isGlobalDefault = typeof account.isGlobalDefault === 'boolean'
       ? account.isGlobalDefault
       : Boolean(existing.isGlobalDefault)
@@ -191,7 +185,6 @@ class AuthStore {
       ownerBotUserId: normalizeUserId(account.ownerBotUserId || existing.ownerBotUserId),
       loginPlatform: toStringValue(account.loginPlatform ?? existing.loginPlatform),
       remark: toStringValue(account.remark ?? existing.remark),
-      shared: isGlobalDefault ? false : shared,
       isGlobalDefault,
       priority,
       authInvalid,
@@ -221,14 +214,7 @@ class AuthStore {
       })
     }
 
-    const sharedIds = Array.isArray(pool.sharedIds)
-      ? [...new Set(pool.sharedIds.map(normalizeUserId).filter(id => id && accounts[id]))]
-      : []
-
-    return {
-      accounts,
-      sharedIds
-    }
+    return { accounts }
   }
 
   #savePool(pool) {
@@ -292,14 +278,6 @@ class AuthStore {
     // 刻意不再「一山不容二虎」地清掉其他全局账号：全局账号现在是一个轮询池
     // （见 getAuthCandidates 里的 #rotateGlobals），扫码登记第二个号不该把第一个顶掉。
 
-    if (next.shared) {
-      if (!pool.sharedIds.includes(userId)) {
-        pool.sharedIds.push(userId)
-      }
-    } else {
-      pool.sharedIds = pool.sharedIds.filter(id => id !== userId)
-    }
-
     this.#savePool(pool)
     logger.debug('[营地账号池] 已保存账号登录态', {
       userId: next.userId,
@@ -307,7 +285,6 @@ class AuthStore {
       loginPlatform: next.loginPlatform,
       isGlobalDefault: next.isGlobalDefault,
       priority: next.priority,
-      shared: next.shared,
       token: maskValue(next.token),
       userKey: maskValue(next.userKey),
       encodeRes: maskValue(next.encodeRes),
@@ -350,7 +327,6 @@ class AuthStore {
       userId: next.userId,
       ownerBotUserId: next.ownerBotUserId,
       isGlobalDefault: next.isGlobalDefault,
-      shared: next.shared,
       authErrorCount: next.authErrorCount,
       lastAuthErrorMessage: next.lastAuthErrorMessage
     })
@@ -403,8 +379,7 @@ class AuthStore {
 
       pool.accounts[accountUserId] = this.#normalizeAccount({
         ...account,
-        isGlobalDefault: shouldBeGlobal,
-        shared: shouldBeGlobal ? false : account.shared
+        isGlobalDefault: shouldBeGlobal
       }, account)
     }
 
@@ -412,7 +387,6 @@ class AuthStore {
       throw new Error(`账号池中不存在营地账号 ${normalizedUserId}`)
     }
 
-    pool.sharedIds = pool.sharedIds.filter(id => pool.accounts[id] && !pool.accounts[id].isGlobalDefault)
     this.#savePool(pool)
     return normalizedUserId
   }
@@ -439,7 +413,6 @@ class AuthStore {
     const next = this.upsertAccount({
       ...account,
       isGlobalDefault: true,
-      shared: false,
       resetAuthState: true
     })
 
@@ -465,7 +438,6 @@ class AuthStore {
     }
 
     delete pool.accounts[normalizedUserId]
-    pool.sharedIds = pool.sharedIds.filter(id => id !== normalizedUserId)
     this.#savePool(pool)
     return true
   }
@@ -493,7 +465,6 @@ class AuthStore {
       removedAccounts.push({
         userId: account.userId,
         ownerBotUserId: account.ownerBotUserId || '',
-        shared: Boolean(account.shared),
         nickname: account.nickname || account.userName || '',
         lastAuthErrorMessage: account.lastAuthErrorMessage || ''
       })
@@ -508,7 +479,6 @@ class AuthStore {
       }
     }
 
-    pool.sharedIds = pool.sharedIds.filter(id => pool.accounts[id])
     this.#savePool(pool)
 
     logger.info('[营地账号池] 已清理失效登录态', {
@@ -522,23 +492,6 @@ class AuthStore {
       removedAccounts,
       skippedGlobalAccounts
     }
-  }
-
-  setShared(userId, shared) {
-    const normalizedUserId = normalizeUserId(userId)
-    if (!normalizedUserId) {
-      throw new Error('缺少营地 userId')
-    }
-
-    const account = this.getAccount(normalizedUserId)
-    if (!account) {
-      throw new Error(`账号池中不存在营地账号 ${normalizedUserId}`)
-    }
-
-    return this.upsertAccount({
-      ...account,
-      shared: Boolean(shared)
-    })
   }
 
   bindCampUserId(botUserId, campUserId) {
@@ -576,15 +529,18 @@ class AuthStore {
     return entry
   }
 
+  /**
+   * 挑这次请求可以用的鉴权账号。
+   *
+   * 现在**只有全局账号**这一类候选，多个时轮询（见 #rotateGlobals）。
+   * 早先还有「共享账号」和「个人登录态兜底」两档，都是「全局账号都不可用才轮到」的
+   * 兜底——多全局账号轮询 + 按账号冷却换号之后，那个前提基本不会发生，
+   * 2026-09-13 一并删掉了（连字段一起）。
+   *
+   * `targetUserId` 参数留着是为了不给调用方添改动，实际已经用不到了。
+   */
   getAuthCandidates(targetUserId, options = {}) {
-    const normalizedTargetUserId = normalizeUserId(targetUserId)
-    const {
-      requesterBotUserId = '',
-      includeTarget = true,
-      includeShared = true,
-      includeGlobal = true
-    } = options
-    const normalizedRequesterBotUserId = normalizeUserId(requesterBotUserId)
+    const { includeGlobal = true } = options
     const pool = this.getPool()
     const candidates = []
     const seen = new Set()
@@ -625,26 +581,6 @@ class AuthStore {
       }
     }
 
-    if (includeShared) {
-      const sharedAccounts = this.#sortAccountsByPriority(
-        pool.sharedIds
-          .map(sharedId => pool.accounts[sharedId])
-          .filter(account => account && !account.isGlobalDefault)
-      )
-      for (const sharedAccount of sharedAccounts) {
-        const sharedId = normalizeUserId(sharedAccount.userId)
-        pushCandidate(pool.accounts[sharedId], 'shared', `共享账号 ${sharedId}`)
-      }
-    }
-
-    if (includeTarget && normalizedTargetUserId && pool.accounts[normalizedTargetUserId]) {
-      const targetAccount = pool.accounts[normalizedTargetUserId]
-      const ownerBotUserId = normalizeUserId(targetAccount.ownerBotUserId)
-      if (ownerBotUserId && normalizedRequesterBotUserId && ownerBotUserId === normalizedRequesterBotUserId) {
-        pushCandidate(targetAccount, 'target', `目标账号 ${normalizedTargetUserId}`)
-      }
-    }
-
     return candidates
   }
 
@@ -654,7 +590,6 @@ class AuthStore {
       ownerBotUserId: account.ownerBotUserId,
       isGlobalDefault: Boolean(account.isGlobalDefault),
       priority: Number(account.priority || 100),
-      shared: Boolean(account.shared),
       authInvalid: Boolean(account.authInvalid),
       authErrorCount: Number(account.authErrorCount || 0),
       nickname: account.nickname || account.userName || '',
@@ -691,11 +626,9 @@ class AuthStore {
     }))
   }
 
-  replaceAccountsFromGuoba(accounts = [], sharedIds = []) {
+  replaceAccountsFromGuoba(accounts = []) {
     const pool = this.getPool()
     const nextAccounts = {}
-    const nextSharedIds = []
-    const normalizedSharedIds = new Set((sharedIds || []).map(normalizeUserId).filter(Boolean))
 
     for (const item of accounts) {
       const userId = normalizeUserId(item.userId)
@@ -713,7 +646,6 @@ class AuthStore {
         ownerBotUserId: normalizeUserId(item.ownerBotUserId),
         isGlobalDefault,
         priority: toNumberValue(item.priority ?? existing.priority ?? 100, 100),
-        shared: isGlobalDefault ? false : (normalizedSharedIds.size ? normalizedSharedIds.has(userId) : Boolean(item.shared)),
         authInvalid: Boolean(item.authInvalid),
         authErrorCount: Number(item.authErrorCount ?? existing.authErrorCount ?? 0),
         nickname: toStringValue(item.nickname || existing.nickname || existing.userName),
@@ -750,15 +682,9 @@ class AuthStore {
       }, existing)
 
       nextAccounts[userId] = next
-      if (next.shared) {
-        nextSharedIds.push(userId)
-      }
     }
 
-    this.#savePool({
-      accounts: nextAccounts,
-      sharedIds: nextSharedIds
-    })
+    this.#savePool({ accounts: nextAccounts })
   }
 }
 

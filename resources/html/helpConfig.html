@@ -75,7 +75,9 @@
 
     .section-grid {
         display: grid;
-        grid-template-columns: 1.15fr 0.85fr;
+        /* 必须和下面的 .cmd-grid 用同一套列宽：早先这里是 1.15fr 0.85fr，
+           结果上下两排的分界线错开，四个框看着就是歪的 */
+        grid-template-columns: 1fr 1fr;
         gap: 24px;
         margin-bottom: 24px;
     }
@@ -91,6 +93,11 @@
         border: 1px solid var(--c-border-soft);
         border-radius: 18px;
         padding: 24px;
+        /* 纵向撑满：同一行的两个框高度由高的那个决定，内容少的那框
+           靠下面的 .row-list / .summary-grid 吃掉多余空间，空白均分到各项之间，
+           不然会全堆在框底（看着像没写完） */
+        display: flex;
+        flex-direction: column;
     }
 
     .panel h2 {
@@ -128,6 +135,8 @@
     .row-list {
         display: grid;
         gap: 12px;
+        flex: 1;
+        align-content: space-between;
     }
 
     .row-item {
@@ -142,6 +151,8 @@
 
     .row-left {
         flex-grow: 1;
+        /* 不加 min-width:0 的话，右侧 value 一长就把这里挤到逐字换行（中文任意位置可断） */
+        min-width: 0;
     }
 
     .row-label {
@@ -160,7 +171,14 @@
         font-size: 16px;
         font-weight: bold;
         margin-left: 16px;
+        /* 不收缩：默认 flex-shrink:1 会被左边的 flex-grow 挤成省略号（实测「5 个可用」→「5 个…」）；
+           上限 45% 保证再长的 value 也不会把左边标签挤成竖排 */
+        flex-shrink: 0;
+        max-width: 45%;
+        text-align: right;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .summary-grid {
@@ -168,6 +186,8 @@
         grid-template-columns: repeat(2, 1fr);
         gap: 12px;
         margin-top: 20px;
+        flex: 1;
+        align-content: space-between;
     }
 
     .summary-item {
@@ -203,11 +223,17 @@
         font-size: 16px;
         font-weight: bold;
         color: var(--c-accent);
+        /* 命令名绝不折行：默认会被右边的 desc 挤成「#营地wx全局登 / 录」 */
+        white-space: nowrap;
+        flex-shrink: 0;
     }
 
     .cmd-desc {
         font-size: 13px;
         color: var(--c-text-muted);
+        text-align: right;
+        min-width: 0;
+        margin-left: 12px;
     }
 
 

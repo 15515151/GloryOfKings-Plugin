@@ -3,6 +3,7 @@ import fetch from 'node-fetch'
 import { Config } from '#components'
 import { decrypt as xxteaDecrypt, encrypt as xxteaEncrypt } from './xxtea.js'
 import authStore, { isUsableAuth } from './authStore.js'
+import { notifyAccountRateLimited } from './rateLimitNotice.js'
 import { markProfileHidden } from './hiddenProfiles.js'
 
 const DEFAULT_PUBLIC_KEY = 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC0h62mV/zjJtFsNdfFNlxksfUOpjDI2KCcBrPiA8T7szABT4InLDTrdXAW84QyGNiazB0i7pgPCNGSAYbiJrCRutZ5jQsVS0Wg/RnXfwVQDJcAHJDjP5IXyroeLX7NUxDai8nPcpfRsvq6sneobyPexZSH0TlVSnecsJZTj5wu/wIDAQAB'
@@ -27,17 +28,17 @@ const PROFILE_ENDPOINT = '/game/koh/profile'
 export const MIN_REQUEST_GAP_MS = 1200
 
 /**
- * 命中 -30107 后的冷却：60s 起步，冷却期间连续再命中则翻倍，封顶 30 分钟。
+ * 命中 -30107 后这个账号**静默多久**：12 小时，不做指数退避。
  *
- * 封顶从 10 分钟提到 30 分钟是**照着实测日志定的**：连续命中的第 5 次之后
- * 冷却稳定在 600s，而每 600s 一过、第一个请求又必然命中，于是「连续第 10 次」
- * 一挂就是几小时下不来（2026-09-13 实测 13:44~19:14 一直卡在 10 次封顶）。
- * 说明营地对「刚被限流又立刻来请求」是有惩罚续期的，10 分钟根本不够它忘掉我们。
- * 首次命中仍是 60s（偶发一次不惩罚用户），只有连着命中才会一路涨到 30 分钟——
- * 既然那段时间里请求本来就全在失败，安静半小时比一直去撩它更快恢复。
+ * 短冷却试过，没用。60s 起步、连续命中翻倍、封顶 30 分钟那套，实测表现是
+ * 「冷却一过打出去的第一发**必然**再中」——2026-09-13 那个号连续 5 个多小时卡在
+ * 「连续第 10 次、恒 600s」下不来（13:44~19:14 一直没恢复），说明营地的惩罚期
+ * 远长于 30 分钟，而且被反复试探还会续期。既然短时间内怎么试都是失败，
+ * 就一次安静够：12 小时里这个号一个请求都不发，期间其他全局账号照常轮询顶上。
+ *
+ * 主人 2026-09-13 拍板：命中即静默 12 小时，并私信主人（见 utils/rateLimitNotice.js）。
  */
-const RATE_LIMIT_BASE_COOLDOWN_MS = 60 * 1000
-const RATE_LIMIT_MAX_COOLDOWN_MS = 30 * 60 * 1000
+const RATE_LIMIT_SILENCE_MS = 12 * 60 * 60 * 1000
 
 /**
  * 单次营地请求的超时。**只计「发车之后」**，不含排队等待——
@@ -48,6 +49,11 @@ const RATE_LIMIT_MAX_COOLDOWN_MS = 30 * 60 * 1000
  * 在还没发出去时就 abort，重试又排到队尾、再超时。计时改到领到名额之后才起。
  */
 const REQUEST_TIMEOUT_MS = 10000
+
+/** 把「还要等多久」写成读得懂的话：超过一小时说小时，否则说秒 */
+function describeWait (ms) {
+  return ms >= 3600000 ? `${Math.ceil(ms / 3600000)} 小时` : `${Math.ceil(ms / 1000)} 秒`
+}
 
 /** 外站公开 JSON（官网资料库 / sapi.run）的超时。这些接口不进队列，但也不能不设表 */
 const EXTERNAL_TIMEOUT_MS = 12000
@@ -85,14 +91,15 @@ class RateLimitError extends Error {
  */
 class ApiService {
   /**
-   * 账号 userId -> 频控冷却截止时间戳（ms）。
+   * 账号 userId -> 静默截止时间戳（ms）。
    *
-   * 按**账号**冷却，不是全局：多个全局账号轮询时，某个号被营地限流
-   * 不该把池里其他好号一起拖停——那个号单独进冷却、暂时从候选里跳过就行。
+   * 按**账号**记，不是全局：多个全局账号轮询时，某个号被营地限流不该把池里
+   * 其他好号一起拖停——那个号单独静默、从候选里跳过，其余的照常顶上。
+   * 条目只在它请求成功时才删（见 #clearRateLimit），所以「静默期内一个请求都不发」
+   * 对上层完全透明。
    */
   #rateLimitUntilByUser = new Map()
-  /** 账号 userId -> 该号冷却期间的连续命中次数，决定它下一次的冷却时长 */
-  #rateLimitHitsByUser = new Map()
+
   /**
    * 最近一次真命中 -30107 的时刻（ms），0 = 从没命中过。
    *
@@ -154,40 +161,51 @@ class ApiService {
     const waitMs = this.#rateLimitCooldownLeft(auth)
     if (waitMs <= 0) return
 
-    const waitSec = Math.ceil(waitMs / 1000)
-    throw new RateLimitError(`该账号命中频控，冷却中（约 ${waitSec} 秒后自动恢复），请稍后再试`)
+    throw new RateLimitError(`营地接口暂时被限流，约 ${describeWait(waitMs)}后恢复，请稍后再试`)
   }
 
-  /** 记录一次 -30107 命中，只冷却触发它的那个账号，返回本次冷却毫秒数 */
+  /**
+   * 记录一次 -30107 命中：把这个号静默 12 小时，并私信主人。
+   *
+   * 「首次」的判据就是**冷却表里还没有它**（成功恢复时条目会被删掉，见 #clearRateLimit），
+   * 所以静默期内就算又被别的路径撞到，也不会反复私信；等它哪天真恢复了、
+   * 以后再被限流，会重新通知一次——那是新的事故，该说。
+   *
+   * @returns {number} 本次静默毫秒数
+   */
   #markRateLimited(auth) {
     const userId = this.#toString(auth?.userId)
     if (!userId) {
       return 0
     }
 
-    const hits = Math.min((this.#rateLimitHitsByUser.get(userId) || 0) + 1, 10)
-    this.#rateLimitHitsByUser.set(userId, hits)
-
-    const cooldown = Math.min(
-      RATE_LIMIT_BASE_COOLDOWN_MS * Math.pow(2, hits - 1),
-      RATE_LIMIT_MAX_COOLDOWN_MS
-    )
-    this.#rateLimitUntilByUser.set(userId, Date.now() + cooldown)
+    const firstHit = !this.#rateLimitUntilByUser.has(userId)
+    this.#rateLimitUntilByUser.set(userId, Date.now() + RATE_LIMIT_SILENCE_MS)
     this.#lastRateLimitAt = Date.now()
 
-    logger.warn(`[王者接口] 账号 ${this.#maskUserId(userId)} 命中频控 -30107，单独冷却 ${Math.round(cooldown / 1000)}s（连续第 ${hits} 次）`)
-    return cooldown
+    logger.warn(`[王者接口] 账号 ${this.#maskUserId(userId)} 命中频控 -30107，静默 ${Math.round(RATE_LIMIT_SILENCE_MS / 3600000)} 小时`)
+
+    // 通知是 fire-and-forget：私信发不出去也不能影响请求链路（sendMaster 自己吃异常）
+    if (firstHit) {
+      notifyAccountRateLimited({
+        userId,
+        silenceMs: RATE_LIMIT_SILENCE_MS,
+        accountCount: this.usableAccountCount()
+      }).catch(() => {})
+    }
+
+    return RATE_LIMIT_SILENCE_MS
   }
 
-  /** 该账号请求成功即视为它自己恢复，只清它的冷却与连续命中计数 */
+  /** 该账号请求成功即视为它自己恢复，清掉它的静默记录 */
   #clearRateLimit(auth) {
     const userId = this.#toString(auth?.userId)
     if (!userId) return
 
-    if ((this.#rateLimitHitsByUser.get(userId) || 0) > 0) {
-      logger.mark(`[王者接口] 账号 ${this.#maskUserId(userId)} 频控已恢复，清除冷却`)
+    // 有记录才说明它此前被限流过，这条日志就是「静默期结束」的信号
+    if (this.#rateLimitUntilByUser.has(userId)) {
+      logger.mark(`[王者接口] 账号 ${this.#maskUserId(userId)} 频控已恢复，静默期结束`)
     }
-    this.#rateLimitHitsByUser.delete(userId)
     this.#rateLimitUntilByUser.delete(userId)
   }
 
@@ -209,7 +227,7 @@ class ApiService {
    * 没有任何可用账号时返回 false —— 那是配置问题，该让请求抛「未找到登录态」，
    * 而不是被轮询当成频控悄悄跳过。
    *
-   * 只统计池里的全局 / 共享账号，不算 allowPersonalAuthFallback 的个人登录态
+   * 只统计池里的全局账号（候选现在也只有这一类）
    * （那个开关默认关，真靠它兜底的部署极少），所以最多是偏保守地多跳一轮，
    * 代价是这一轮晚个两分钟，不会漏推。
    */
@@ -333,7 +351,7 @@ class ApiService {
     }
 
     return text
-      .replace(/(全局账号|共享账号|目标账号)\s*(\d{5,})/g, (_, label, userId) => `${label} ${this.#maskUserId(userId)}`)
+      .replace(/(全局账号|目标账号)\s*(\d{5,})/g, (_, label, userId) => `${label} ${this.#maskUserId(userId)}`)
       .replace(/(默认全局账号)\s*(\d{5,})/g, (_, label, userId) => `${label} ${this.#maskUserId(userId)}`)
   }
 
@@ -343,7 +361,7 @@ class ApiService {
       return true
     }
 
-    return /营地登录态|全局账号|共享账号|目标账号|token|userKey|encodeRes|登录失效|重新登录|未找到可用的营地登录态|鉴权|安全参数/i.test(message)
+    return /营地登录态|全局账号|目标账号|token|userKey|encodeRes|登录失效|重新登录|未找到可用的营地登录态|鉴权|安全参数/i.test(message)
   }
 
   formatUserFacingError(error, options = {}) {
@@ -400,7 +418,6 @@ class ApiService {
       priority: Number(auth.priority || 100),
       loginPlatform: this.#toString(auth.loginPlatform),
       ownerBotUserId: this.#toString(auth.ownerBotUserId),
-      shared: Boolean(auth.shared),
       authInvalid: Boolean(auth.authInvalid),
       authErrorCount: Number(auth.authErrorCount || 0),
       lastAuthErrorAt: this.#toString(auth.lastAuthErrorAt),
@@ -419,8 +436,6 @@ class ApiService {
       : {}
 
     return {
-      enableAccountPool: auth.enableAccountPool !== false,
-      allowPersonalAuthFallback: auth.allowPersonalAuthFallback === true,
       gameAreaId: this.#toString(auth.gameAreaId || 1),
       gameUserSex: this.#toString(auth.gameUserSex || 1),
       kohDimGender: this.#toString(auth.kohDimGender || 2),
@@ -570,12 +585,7 @@ class ApiService {
 
   #getAuthCandidates(targetUserId, requesterBotUserId = '') {
     const baseAuth = this.#getBaseAuthConfig()
-    const candidates = authStore.getAuthCandidates(targetUserId, {
-      requesterBotUserId,
-      includeTarget: baseAuth.enableAccountPool && baseAuth.allowPersonalAuthFallback,
-      includeShared: baseAuth.enableAccountPool,
-      includeGlobal: true
-    })
+    const candidates = authStore.getAuthCandidates(targetUserId)
 
     const mappedCandidates = candidates.map(candidate => ({
       ...candidate,
@@ -589,8 +599,6 @@ class ApiService {
     logger.debug('[王者接口] 本次请求鉴权候选列表', {
       targetUserId: this.#toString(targetUserId),
       requesterBotUserId: this.#toString(requesterBotUserId),
-      enableAccountPool: baseAuth.enableAccountPool,
-      allowPersonalAuthFallback: baseAuth.allowPersonalAuthFallback,
       candidates: rotated.map(candidate => this.#buildAuthDebugInfo(
         candidate.auth,
         candidate.source,
@@ -609,8 +617,8 @@ class ApiService {
    * 没有这一步的话候选永远从 priority 最高的那个开始试，等于所有请求都压在同一个号上，
    * 队列分成几条也没用。
    *
-   * **只有全局账号轮询**：共享账号 / 个人兜底仍是「前面的都不可用才轮到」的故障转移，
-   * 那个顺序有它自己的语义（见 utils/authStore.js 的 getAuthCandidates），别一起轮了。
+   * 候选池里现在就只有全局账号这一类（共享账号、个人兜底都已删），
+   * 所以轮转的就是全部候选，顺序即「这次按什么顺序试」。
    *
    * @param {Array<object>} candidates authStore 给的候选（已按 priority 排好）
    * @returns {Array<object>} 轮转后的候选
@@ -1055,7 +1063,7 @@ class ApiService {
       // catch，会被当作「非鉴权错误」直接 break 掉整个循环，后面的候选就没机会了。
       const cooldownLeft = this.#rateLimitCooldownLeft(candidate.auth)
       if (cooldownLeft > 0) {
-        lastError = new RateLimitError(`该账号命中频控，冷却中（约 ${Math.ceil(cooldownLeft / 1000)} 秒后自动恢复），请稍后再试`)
+        lastError = new RateLimitError(`营地接口暂时被限流，约 ${describeWait(cooldownLeft)}后恢复，请稍后再试`)
         logger.warn(`[王者接口] ${candidate.label} 仍在频控冷却中，暂时跳过它`)
 
         if (!isLast) {
@@ -1077,7 +1085,6 @@ class ApiService {
             label: candidate.label,
             userId: this.#toString(candidate.auth.userId),
             isGlobalDefault: Boolean(candidate.auth.isGlobalDefault),
-            shared: Boolean(candidate.auth.shared),
             priority: Number(candidate.auth.priority || 100)
           }
         })
@@ -1093,7 +1100,7 @@ class ApiService {
         if (decision.action === 'rate-limit') {
           // 只冷却触发频控的这个号，然后换下一个候选——池子里还有好号就不该整体停摆
           const cooldown = this.#markRateLimited(candidate.auth)
-          lastError = new RateLimitError(`营地接口操作频繁(-30107)，该账号已冷却 ${Math.round(cooldown / 1000)} 秒，请稍后再试`)
+          lastError = new RateLimitError(`营地接口操作频繁(-30107)，该账号已暂停 ${describeWait(cooldown)}，请稍后再试`)
 
           if (isLast) {
             break

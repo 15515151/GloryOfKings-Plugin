@@ -1,7 +1,7 @@
 import path from 'path'
 import { writeYamlFile, readYamlFile, Button, AT_HEAD, AT_TAIL, stripAtText, resolveTargetUserId, shouldQuote, invalidateShareCache, querySharedBind, listHiddenProfiles, clearHiddenProfile, clearAllHiddenProfiles } from '#utils'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { Config, PluginData, PluginPath } from '#components'
+import { PluginData, PluginPath } from '#components'
 import authStore from '../utils/authStore.js'
 import { syncUserBind } from '../utils/shareUsers.js'
 import { fetchRoleNames } from '../utils/roleName.js'
@@ -13,7 +13,6 @@ import {
   createQQLoginSession,
   waitForQQLogin
 } from '../utils/qqLogin.js'
-import { renderMasterPanel } from '../utils/masterPanel.js'
 
 const pendingWechatLoginMap = new Map()
 const LOGIN_QR_RECALL_SECONDS = 175
@@ -74,26 +73,6 @@ export class AccountManager extends plugin {
           permission: 'master'
         },
 
-        {
-          reg: '^#王者设置共享账号候选(启用|关闭)$',
-          fnc: 'toggleSharedAuthCandidates',
-          permission: 'master'
-        },
-        {
-          reg: '^#王者设置个人登录态兜底(启用|关闭)$',
-          fnc: 'togglePersonalAuthFallback',
-          permission: 'master'
-        },
-        {
-          reg: '^#共享营地账号\\s*(\\d+)$',
-          fnc: 'shareCampAuth',
-          permission: 'master'
-        },
-        {
-          reg: '^#取消共享营地账号\\s*(\\d+)$',
-          fnc: 'unshareCampAuth',
-          permission: 'master'
-        },
         {
           reg: '^#清理失效营地账号$',
           fnc: 'clearInvalidCampAuth',
@@ -208,7 +187,6 @@ export class AccountManager extends plugin {
     const pool = authStore.getPool()
     const accounts = authStore.listAccounts()
     const userData = readYamlFile(path.join(PluginData, 'UserData.yaml')) || {}
-    const sharedIds = new Set(pool.sharedIds)
     const boundUsers = Object.entries(userData)
       .map(([qqId, info]) => ({
         qqId: String(qqId),
@@ -623,7 +601,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想加进公用池就请主人发【#共享营地账号 营地ID】。'
+        '\n想让机器人也用上这个号，请主人发【#营地wx全局登录】。'
       ]
     })
   }
@@ -701,7 +679,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想加进公用池就请主人发【#共享营地账号 营地ID】。'
+        '\n想让机器人也用上这个号，请主人发【#营地wx全局登录】。'
       ]
     })
   }
@@ -777,8 +755,7 @@ export class AccountManager extends plugin {
       botUserId,
       campUserId: account.userId,
       loginPlatform: account.loginPlatform,
-      nickname: account.nickname || account.userName || '',
-      shared: account.shared
+      nickname: account.nickname || account.userName || ''
     })
 
     await this.replyBindResultCard(e, botUserId, account.userId)
@@ -876,20 +853,6 @@ export class AccountManager extends plugin {
     return true
   }
 
-  async toggleSharedAuthCandidates(e) {
-    const enable = e.msg.includes('启用')
-    Config.modify('auth', 'enableAccountPool', enable)
-    await renderMasterPanel(e)
-    return true
-  }
-
-  async togglePersonalAuthFallback(e) {
-    const enable = e.msg.includes('启用')
-    Config.modify('auth', 'allowPersonalAuthFallback', enable)
-    await renderMasterPanel(e)
-    return true
-  }
-
   // 营地账号的显示名：优先游戏昵称，取不到退回营地昵称，都没有就只剩 ID
   async describeCampAccount(account) {
     const campUserId = String(account?.userId || '')
@@ -905,30 +868,6 @@ export class AccountManager extends plugin {
 
     const name = roleName || account.nickname || account.userName || ''
     return name ? `${campUserId} ${name}` : campUserId
-  }
-
-  async shareCampAuth(e) {
-    const campUserId = e.msg.replace(/^#共享营地账号\s*/, '').trim()
-
-    try {
-      const account = authStore.setShared(campUserId, true)
-      await e.reply(`已将营地账号 ${await this.describeCampAccount(account)} 加入共享账号池，当前状态：${account.authInvalid ? '失效' : '正常'}`)
-    } catch (error) {
-      await e.reply(error.message)
-    }
-    return true
-  }
-
-  async unshareCampAuth(e) {
-    const campUserId = e.msg.replace(/^#取消共享营地账号\s*/, '').trim()
-
-    try {
-      const account = authStore.setShared(campUserId, false)
-      await e.reply(`已将营地账号 ${await this.describeCampAccount(account)} 从共享账号池移除，当前状态：${account.authInvalid ? '失效' : '正常'}`)
-    } catch (error) {
-      await e.reply(error.message)
-    }
-    return true
   }
 
   async clearInvalidCampAuth(e) {
@@ -949,8 +888,7 @@ export class AccountManager extends plugin {
       lines.push(...removedAccounts.map((account, index) => {
         const nickname = account.nickname || '未命名'
         const ownerText = account.ownerBotUserId ? ` owner:${account.ownerBotUserId}` : ''
-        const sharedText = account.shared ? '共享' : '私有'
-        return `${index + 1}. [${sharedText}] ${account.userId} ${nickname}${ownerText}`
+        return `${index + 1}. ${account.userId} ${nickname}${ownerText}`
       }))
     }
 

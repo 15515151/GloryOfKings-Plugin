@@ -11,16 +11,11 @@ function getAuthPoolSnapshot () {
   }))
   const invalidCount = accounts.filter(account => account.authInvalid).length
   const usableCount = accounts.length - invalidCount
-  const options = accounts.map(account => ({
-    label: `${account.userId}${account.nickname ? ` (${account.nickname})` : ''} [${account.authInvalid ? '失效' : '正常'}${account.isGlobalDefault ? '/全局' : (account.shared ? '/共享' : '/私有')}]`,
-    value: account.userId
-  }))
 
   return {
     accounts,
     invalidCount,
-    usableCount,
-    options
+    usableCount
   }
 }
 
@@ -28,8 +23,7 @@ export function supportGuoba () {
   const {
     accounts: authPoolAccounts,
     invalidCount,
-    usableCount,
-    options: authPoolOptions
+    usableCount
   } = getAuthPoolSnapshot()
 
   return {
@@ -254,24 +248,6 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
-          label: '使用策略'
-        },
-        {
-          field: 'auth.enableAccountPool',
-          label: '启用共享账号候选',
-          helpMessage: '命令：#王者设置共享账号候选启用 / #王者设置共享账号候选关闭',
-          bottomHelpMessage: '默认关闭。关闭时只用全局账号（可以有多个，请求在它们之间轮询）；开启后才会在全局账号之后继续尝试共享账号。个人登录态不会默认参与，只有同时开启“个人登录态兜底”时才会作为最后候选。',
-          component: 'Switch'
-        },
-        {
-          field: 'auth.allowPersonalAuthFallback',
-          label: '允许个人登录态兜底',
-          helpMessage: '命令：#王者设置个人登录态兜底启用 / #王者设置个人登录态兜底关闭',
-          bottomHelpMessage: '默认关闭。开启后会在全局账号和共享账号都不可用时，最后再尝试当前 QQ 自己保存的登录态。若“共享账号候选”为关闭状态，则该兜底链路不会实际参与请求。',
-          component: 'Switch'
-        },
-        {
-          component: 'Divider',
           label: '请求默认值'
         },
         {
@@ -316,26 +292,13 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
-          label: '命令入口：#营地wx登录 / #王者帮助 / #王者设置 / #营地wx全局登录 / #王者用户统计 / #王者设置共享账号候选启用|关闭 / #王者设置个人登录态兜底启用|关闭 / #共享营地账号 / #清理失效营地账号 / #开启战绩推送 / #关闭战绩推送 / #开启上下线提醒 / #关闭上下线提醒 / #战绩推送状态 / #清空王者战绩推送'
-        },
-        {
-          field: 'authPool.sharedIds',
-          label: '共享账号批量管理',
-          helpMessage: `批量选择哪些账号加入共享账号池。当前共 ${authPoolAccounts.length} 个账号，可用 ${usableCount} 个，失效 ${invalidCount} 个。`,
-          bottomHelpMessage: '下拉选项会直接显示正常/失效状态。选中的账号会被标记为共享，未选中的账号仍保留在账号池中，但只允许 ownerBotUserId 对应的 QQ 用户优先使用。',
-          component: 'Select',
-          componentProps: {
-            mode: 'multiple',
-            options: authPoolOptions,
-            allowAdd: false,
-            allowDel: true
-          }
+          label: '命令入口：#营地wx登录 / #王者帮助 / #王者设置 / #营地wx全局登录 / #王者用户统计 / #清理失效营地账号 / #开启战绩推送 / #关闭战绩推送 / #开启上下线提醒 / #关闭上下线提醒 / #战绩推送状态 / #清空王者战绩推送'
         },
         {
           field: 'authPool.accounts',
           label: `营地账号列表（共 ${authPoolAccounts.length} 个，可用 ${usableCount} 个，失效 ${invalidCount} 个）`,
           helpMessage: '管理 AuthPool.json 中的完整账号信息。字段名已尽量按实际代码名标注；手动录入时，至少需要 userId、token、userKey 这三个核心字段。',
-          bottomHelpMessage: '删除条目会从账号池移除该账号；敏感字段支持直接编辑；全局账号、共享账号和优先级都直接在这里维护（“全局账号”可以勾选多个，请求会在它们之间轮询）。未开启“共享账号候选”时，请求只使用全局账号；私人账号仅允许 ownerBotUserId 对应的 QQ 用户在开启个人兜底时使用。',
+          bottomHelpMessage: '删除条目会从账号池移除该账号；敏感字段支持直接编辑；全局账号和优先级都直接在这里维护（“全局账号”可以勾选多个，请求会在它们之间轮询）。',
           component: 'GSubForm',
           componentProps: {
             multiple: true,
@@ -364,13 +327,8 @@ export function supportGuoba () {
                 label: '归属 QQ',
                 component: 'Input',
                 componentProps: {
-                  placeholder: 'ownerBotUserId，留空表示仅共享'
+                  placeholder: 'ownerBotUserId，留空表示不归属任何 QQ'
                 }
-              },
-              {
-                field: 'shared',
-                label: '共享账号',
-                component: 'Switch'
               },
               {
                 field: 'isGlobalDefault',
@@ -661,10 +619,7 @@ export function supportGuoba () {
         return {
           config: Config.getDefOrConfig('config'),
           auth: Config.getDefOrConfig('auth'),
-          authPool: {
-            sharedIds: accounts.filter(account => account.shared).map(account => account.userId),
-            accounts
-          }
+          authPool: { accounts }
         }
       },
       setConfigData (data, { Result }) {
@@ -673,12 +628,9 @@ export function supportGuoba () {
           auth: Config.getDefOrConfig('auth')
         }
 
-        if (Object.prototype.hasOwnProperty.call(data, 'authPool.accounts') || Object.prototype.hasOwnProperty.call(data, 'authPool.sharedIds')) {
+        if (Object.prototype.hasOwnProperty.call(data, 'authPool.accounts')) {
           const { accounts: currentAccounts } = getAuthPoolSnapshot()
-          authStore.replaceAccountsFromGuoba(
-            data['authPool.accounts'] || currentAccounts,
-            data['authPool.sharedIds'] || []
-          )
+          authStore.replaceAccountsFromGuoba(data['authPool.accounts'] || currentAccounts)
         }
 
         for (const key in data) {

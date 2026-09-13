@@ -252,7 +252,7 @@ const toPercent = value => {
  * 上层照旧只用官网数据出图 —— `#英雄攻略` 「没绑营地ID也能用」这个特性不能因为加了铭文就丢掉。
  *
  * @param {string|number} heroId 英雄 ename
- * @param {string} campId 营地ID（可空，空则由 authStore 挑全局/共享账号）
+ * @param {string} campId 营地ID（可空，空则由 authStore 挑全局账号）
  * @param {string} qq 属主QQ，authStore 按它取鉴权候选，不能省（见记忆 gok-camp-api-owner-qq）
  * @returns {Promise<{coreEquips: object[], runeSets: object[]}|null>}
  */
