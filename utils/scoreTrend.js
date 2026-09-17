@@ -70,6 +70,41 @@ export function pickPeakWindow (battles = [], fromSec = 0, target = TREND_TARGET
   return { list: all.slice(-target), relaxed: true }
 }
 
+/**
+ * 把巅峰局聚合成「一天一个点」的曲线，对齐营地 App 的「上分趋势」。
+ *
+ * App 那张图是**逐日**一个点（当天最后一场的收盘分），不是逐场。而 seasonpage 的
+ * `rankInfo.gameTrend` 是**段位快照**——点里带 jobName / stars / totalRankStar，
+ * 只在段位或星数变化那天才记一笔（实测 26 天只回 8 个点，间隔 1~8 天不均），
+ * 拿它画折线自然又稀又不像 App。逐日曲线只能从本地归档算：归档每场都落，
+ * 聚到天就是 App 的形状（实测同一账号 8-23~9-17 逐日 25 点，与 App 图逐日吻合）。
+ *
+ * @param {Array<object>} battles loadArchive 的返回（倒序）
+ * @param {number} fromSec 区间起点（秒）
+ * @returns {Array<{score:number,time:number,gameCnt:number}>} 正序，一天一个点
+ */
+export function buildDailyTrend (battles = [], fromSec = 0) {
+  const picked = pickPeakBattles(battles, fromSec)
+  if (picked.length < 2) return []
+
+  const byDay = new Map()
+  for (const item of picked) {
+    const key = dayKey(toInt(item.dtEventTime))
+    if (!byDay.has(key)) byDay.set(key, [])
+    byDay.get(key).push(item)
+  }
+
+  // pickPeakBattles 已按时间正序，所以每天数组的末元素就是当天最后一场
+  return [...byDay.values()].map(list => {
+    const last = list[list.length - 1]
+    return {
+      score: toInt(last.newMasterMatchScore),
+      time: toInt(last.dtEventTime),
+      gameCnt: list.length
+    }
+  })
+}
+
 /** 等距抽稀，首尾必留 */
 function thin (list, max = MAX_POINTS) {
   if (list.length <= max) return list

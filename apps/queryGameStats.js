@@ -19,10 +19,42 @@ const MODE_MAP = [
 
 const findMode = key => MODE_MAP.find(m => m.key === key) || null
 
+/**
+ * 一场战绩是不是这个英雄打的。四路匹配兼容不同 API 版本的字段格式。
+ *
+ * 抽成模块级函数是为了让 `collectBattles` 能边翻边筛（见那边的 match 参数）——
+ * 两边用同一份判据，免得筛出来的和展示的对不上。
+ */
+const matchHero = (item, heroId, matchedName) => {
+  // 方式1：直接比对 heroId 字段（数值或字符串）
+  if (item.heroId != null && String(item.heroId) === String(heroId)) return true
+  // 方式2：heroId 数值比对
+  if (item.heroId != null && Number(item.heroId) === Number(heroId)) return true
+  // 方式3：从 heroIcon URL 中提取 heroId00.jpg 模式
+  if (item.heroIcon) {
+    const m = item.heroIcon.match(/\/(\d+)00\.jpg/)
+    if (m && m[1] === String(heroId)) return true
+  }
+  // 方式4：heroName 直接匹配
+  if (item.heroName && item.heroName === matchedName) return true
+  return false
+}
+
 // 服务端一页固定 30 场。宽筛模式过滤后可能不足，用 lastTime 游标往前翻页补齐。
 const TARGET_COUNT = 30
-const HERO_TARGET = 100
-const MAX_PAGES = 10
+/**
+ * 英雄战绩要翻到多少场为止。
+ *
+ * 早先写的是 100：翻满 100 场再按英雄筛，冷门英雄（实测孙权近 100 场里只有 10 场）
+ * 就只出 10 条，看着像被截断。改成 300 之后同一账号能凑到 30 场满页
+ * （实测 300 场 ≈ 25 天，孙权 30 场）。
+ *
+ * **但 300 场不是每次都要翻满**：配合下面的 match 回调「筛到够就停」，
+ * 热门英雄通常第一页 30 场里就有十几场，翻两三页就够；
+ * 只有真正冷门的英雄才会一路翻到上限，那时才付满 28 页的代价。
+ */
+const HERO_TARGET = 300
+const MAX_PAGES = 30
 
 /**
  * 模式筛选（排位/巅峰）的翻页上限。比 MAX_PAGES 小得多是故意的：
@@ -124,12 +156,16 @@ export class QueryGameStats extends plugin {
 
     let battleList
     try {
-      // 英雄战绩要在近 100 场里筛，最多翻 MAX_PAGES 页、每页一次请求，
+      // 边翻边筛：命中满 30 场就停，热门英雄通常两三页就够，冷门英雄才翻到上限。
       // 十几秒没动静用户会以为指令没生效，先给个回执（和群报的做法一致）。
-      // 秒数交给 estimateRequestSeconds 算：请求按账号并发，池里有几个号就快几倍
+      // 秒数按 MAX_PAGES 估最坏情况（这是「最多约 N 秒」，说多不说少）；
+      // 单账号部署下 30 页确实要这么久，池里账号多就会明显更快。
       const seconds = estimateRequestSeconds(MAX_PAGES - 1)
       await e.reply(`正在翻找 ${matchedName} 的近期战绩，最多约 ${seconds} 秒，请稍候...`, shouldQuote())
-      battleList = await this.collectBattles(ID, String(userId), null, { forcePaginate: true })
+      battleList = await this.collectBattles(ID, String(userId), null, {
+        forcePaginate: true,
+        match: item => matchHero(item, heroId, matchedName)
+      })
     } catch (error) {
       logger.error(`[英雄战绩查询] 查询 ${ID} 失败: ${error.message}`)
       await e.reply(ApiService.formatUserFacingError(error, {
@@ -139,21 +175,7 @@ export class QueryGameStats extends plugin {
       return
     }
 
-    // 按英雄过滤：多策略匹配，兼容不同 API 版本的字段格式
-    const heroBattles = (battleList?.list || []).filter(item => {
-      // 方式1：直接比对 heroId 字段（数值或字符串）
-      if (item.heroId != null && String(item.heroId) === heroId) return true
-      // 方式2：heroId 数值比对
-      if (item.heroId != null && Number(item.heroId) === Number(heroId)) return true
-      // 方式3：从 heroIcon URL 中提取 heroId00.jpg 模式
-      if (item.heroIcon) {
-        const m = item.heroIcon.match(/\/(\d+)00\.jpg/)
-        if (m && m[1] === heroId) return true
-      }
-      // 方式4：heroName 直接包含匹配
-      if (item.heroName && item.heroName === matchedName) return true
-      return false
-    })
+    const heroBattles = (battleList?.list || []).filter(item => matchHero(item, heroId, matchedName))
 
     const total = battleList?.list?.length || 0
     logger.debug(`[英雄战绩查询] ${matchedName}(heroId=${heroId})，总战绩 ${total} 场，命中 ${heroBattles.length} 场`)
@@ -183,12 +205,15 @@ export class QueryGameStats extends plugin {
       return
     }
 
-    // 统计基于全量，展示取最近 30 场
-    const totalGames = heroBattles.length
-    const totalWins = heroBattles.filter(item => Number(item.gameresult) === 1).length
+    // 命中场次通常刚过 30（每页 30 场，命中数跨过阈值就收手），统计和展示都取最近 30 场，
+    // 图头「最近 N 场 X% 胜率」才和下面列的 N 条对得上 —— 早先统计用全量命中、展示只截 30 条，
+    // 两个数字会打架。真正冷门的英雄凑不满 30 场时，取到的就是全部，也不丢信息。
+    const shown = heroBattles.slice(0, TARGET_COUNT)
+    const totalGames = shown.length
+    const totalWins = shown.filter(item => Number(item.gameresult) === 1).length
     const winRate = Math.round((totalWins / totalGames) * 100)
 
-    const processedData = heroBattles.slice(0, TARGET_COUNT).map(this.toListItem)
+    const processedData = shown.map(this.toListItem)
 
     const listImg = await puppeteer.screenshot('QueryGameRecordList', {
       imgType: 'webp',
@@ -330,10 +355,13 @@ export class QueryGameStats extends plugin {
    *
    * @param {object} [mode] 模式筛选
    * @param {object} [opts]
-   * @param {boolean} [opts.forcePaginate=false] 强制翻满 MAX_PAGES 页（英雄战绩查询用）
+   * @param {boolean} [opts.forcePaginate=false] 翻到 HERO_TARGET 场为止（英雄战绩查询用）
+   * @param {Function} [opts.match] 逐场判据。给了它就按**命中数**而不是总场数判断「凑够了没」：
+   *   命中满 TARGET_COUNT 立即收手，冷门英雄也只需要翻到命中够数那一刻。
+   *   不给则按总场数判断（模式筛选那种服务端已经筛过的场景）。
    * @returns 与 morebattlelist 的 data 同构的对象，list 已按模式过滤
    */
-  async collectBattles(ID, userId, mode, { forcePaginate = false } = {}) {
+  async collectBattles(ID, userId, mode, { forcePaginate = false, match = null } = {}) {
     const option = mode?.option ?? 0
     const target = forcePaginate ? HERO_TARGET : TARGET_COUNT
     const pageLimit = forcePaginate ? MAX_PAGES : (mode ? MODE_MAX_PAGES : 1)
@@ -341,6 +369,8 @@ export class QueryGameStats extends plugin {
     const seen = new Set()
     let lastTime = 0
     let root = null
+    // 命中数：只有给了 match 才有意义，用来判断「筛出来的够不够展示了」
+    let hit = 0
 
     for (let page = 0; page < pageLimit; page += 1) {
       const { data } = await ApiService.getMoreBattleList(ID, userId, { option, lastTime })
@@ -356,18 +386,20 @@ export class QueryGameStats extends plugin {
         if (seen.has(key)) continue
         seen.add(key)
         collected.push(item)
+        if (match && match(item)) hit += 1
       }
 
-      logger.debug(`[战绩查询] 第 ${page + 1}/${pageLimit} 页 option=${option} 返回 ${raw.length} 场，累计 ${collected.length} 场`)
+      logger.debug(`[战绩查询] 第 ${page + 1}/${pageLimit} 页 option=${option} 返回 ${raw.length} 场，累计 ${collected.length} 场${match ? `，命中 ${hit} 场` : ''}`)
 
-      if (collected.length >= target) break
+      // 给了 match 就按命中数收手：凑够展示量就够了，不必把整个窗口翻完
+      if (match ? hit >= TARGET_COUNT : collected.length >= target) break
       if (!data.hasMore || !data.lastTime || data.lastTime === lastTime) break
       lastTime = data.lastTime
     }
 
     if (!root) return null
 
-    if (collected.length < TARGET_COUNT) {
+    if (!match && collected.length < TARGET_COUNT) {
       logger.debug(`[战绩查询] ${mode ? mode.key : '全部'}模式最终只凑到 ${collected.length} 场（上限 ${pageLimit} 页），该账号可能就是打得少`)
     }
 

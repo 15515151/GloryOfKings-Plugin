@@ -122,6 +122,14 @@ body::before {
   margin-bottom: 16px;
   letter-spacing: 1px;
 }
+/* 标题旁的口径标注（如「逐日 · 覆盖 25 天」），低调不抢标题 */
+.section-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(255,255,255,0.35);
+  letter-spacing: 0;
+  margin-left: 8px;
+}
 .hl { font-family: Number, YS, sans-serif; color: #f5d76e; font-weight: bold; }
 
 /* 上分趋势 */

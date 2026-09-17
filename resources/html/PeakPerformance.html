@@ -33,7 +33,7 @@
   <!-- 上分趋势 -->
   {{if trend && trend.length > 1}}
   <div class="section">
-    <div class="section-title">上分趋势</div>
+    <div class="section-title">上分趋势{{if trendNote}}<span class="section-note">{{trendNote}}</span>{{/if}}</div>
     <div class="trend-wrap">
       <canvas id="trendCanvas" width="2910" height="780"></canvas>
     </div>
@@ -179,14 +179,16 @@ if (trend && trend.length > 1) {
   }
 
   // 填充渐变
+  // 填充渐变。底边必须是画布底边：路径要「曲线 → 落到底边 → 沿底边回到起点」再 closePath，
+  // 先 moveTo 到底边再画曲线会把这一笔切成两个子路径，closePath 直接从右下角连回曲线起点，
+  // 填充区就多出一条穿过图中间的斜线（数据一路上升时看不出来，有涨有跌时特别明显）
   const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b)
   grad.addColorStop(0, 'rgba(245,215,110,0.32)')
   grad.addColorStop(1, 'rgba(245,215,110,0.02)')
   ctx.beginPath()
-  ctx.moveTo(xs[0], H - pad.b)
-  ctx.lineTo(xs[0], ys[0])
   buildSmoothPath()
   ctx.lineTo(xs[xs.length - 1], H - pad.b)
+  ctx.lineTo(xs[0], H - pad.b)
   ctx.closePath()
   ctx.fillStyle = grad; ctx.fill()
 

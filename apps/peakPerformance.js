@@ -2,6 +2,8 @@ import path from 'path'
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { ApiService, readYamlFile, Button, parsePerfArgs, seasonNo, AT_HEAD, stripAtText, resolveTargetUserId, resolveUserData, shouldQuote } from '#utils'
 import { PluginData, PluginPath } from '#components'
+import { loadArchive } from '../utils/battleArchive.js'
+import { buildDailyTrend } from '../utils/scoreTrend.js'
 
 // branchType：0=全部分路 1=对抗路 2=中路 3=发育路 4=打野 5=游走
 const BRANCH_NAME = { 0: '全部', 1: '对抗路', 2: '中路', 3: '发育路', 4: '打野', 5: '游走' }
@@ -95,15 +97,28 @@ export class PeakPerformance extends plugin {
       return
     }
 
-    // 上分趋势：seasonpage 只返回一条 gameTrend，其 score 字段即巅峰分（=headCard.masterScore）。
-    // 排位星数 totalRankStar 对巅峰玩家恒为满值，不能用来画趋势。
+    // 上分趋势：**优先用本地归档按天聚合**，与营地 App 的逐日曲线同口径。
+    //
+    // seasonpage 的 rankInfo.gameTrend 是**段位快照**（点里带 jobName / stars /
+    // totalRankStar），只在段位或星数变化那天才记一笔：实测同一账号近 26 天只回 8 个点、
+    // 间隔 1~8 天不均，画出来又稀又和 App 对不上。归档每场都落，聚到天就是 App 的形状
+    // （同一账号 8-23~9-17 逐日 25 点，最低点 1686 落在 8-31，与 App 图逐日吻合）。
+    //
+    // 归档读盘零请求；点数太少（没开推送的号库是空的）才回落到 seasonpage 的段位快照，
+    // 至少保证有图可看。这里**不补拉战绩**：本指令已经并发 8 个请求，再翻页会明显拖慢。
     const ri = seasonData?.behavior?.rankInfo || {}
-    const trend = (ri.gameTrend || []).slice().reverse().map(t => ({
-      score: Number(t.score) || 0,
-      jobName: t.jobName || '',
-      jobColor: t.jobColor || '#f5d76e',
-      time: t.time
-    }))
+    const archived = buildDailyTrend(loadArchive(campId), Math.floor(Date.now() / 1000) - 30 * 86400)
+    const useArchive = archived.length >= 3
+    const trend = useArchive
+      ? archived
+      : (ri.gameTrend || []).slice().reverse().map(t => ({
+          score: Number(t.score) || 0,
+          jobName: t.jobName || '',
+          jobColor: t.jobColor || '#f5d76e',
+          time: t.time
+        }))
+    // 归档覆盖天数由推送轮询跑了多久决定，不是固定的 30 天，如实标出来
+    const trendNote = useArchive ? `逐日 · 覆盖 ${archived.length} 天` : '按段位变化'
 
     // 常用英雄：巅峰赛英雄在 behavior.masterInfo.heros，rankInfo.heros 是排位英雄，勿混用。
     const mi = seasonData?.behavior?.masterInfo || {}
@@ -183,6 +198,7 @@ export class PeakPerformance extends plugin {
       lanesJson: JSON.stringify(lanes),
       trend,
       trendJson: JSON.stringify(trend),
+      trendNote,
       heros
     })
 
