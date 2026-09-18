@@ -1274,6 +1274,23 @@ class ApiService {
   }
 
   /**
+   * **保活**：用指定账号调一次最轻的接口，让营地那边的登录态「动一下」。
+   *
+   * 为什么需要它：营地 token **没有固定过期时间**（`/user/login` 恒返回 `expires=0`），
+   * 也没有「刷新」接口（老的 `/user/refreshweixintoken` 已下线，现在报 rpc invalid）——
+   * 它是**用则续命、闲置才死**（记忆里的实例：闲置 29 天就报 `-30003` 登录态失效）。
+   * 所以「天天在用的号不会过期，用得少的号会被忘掉」，定期戳一下就能把用得少的也保住。
+   *
+   * ⚠️ 只做查询、不改任何状态，也**不会换掉 token**（实测调完 token 原样不动，
+   *    观战服务那几个正在用的号也不受影响）。
+   *
+   * @param {string} targetUserId 用哪个账号去调（账号池里的 userId）
+   */
+  async keepAlive (targetUserId) {
+    return this.#request('POST', '/user/getcampfriends', {}, {}, 1, targetUserId)
+  }
+
+  /**
    * 获取战绩列表（单页，服务端固定一页 30 场）
    * @param {object} opts
    * @param {number} opts.option   模式筛选，取值见响应里的 options 字段：0=全部 1=5v5排位 16=10v10排位 2=5v5标准 4=巅峰赛 19=2v2巅峰

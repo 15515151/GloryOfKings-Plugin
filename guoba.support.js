@@ -188,7 +188,7 @@ export function supportGuoba () {
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程 server/watch-server.js（负责取直播流、录像），插件通过这个地址指挥它。部署命令：pm2 start plugins/GloryOfKings-Plugin/server/watch-server.js --name gok-watch --interpreter node 然后 pm2 save。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（服务端代码在 watch-server 分支，部署指令会自动拉下来并用 pm2 托管）。换成别的端口改这里即可，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
@@ -229,6 +229,15 @@ export function supportGuoba () {
             min: 5000,
             step: 1000,
             placeholder: '默认 15000'
+          }
+        },
+        {
+          field: 'config.campRenewCron',
+          label: '登录态保活时间（cron）',
+          bottomHelpMessage: '营地的 token 不给过期时间、也没有刷新接口 —— 是「用则续命、闲置才死」（闲置久了会报登录态失效）。这里配个时间，插件会定期给每个号戳一下把它保住，QQ 和微信都适用。默认每天 5:13 跑一次。留空 = 关掉定时（还能手发 #营地续期）。QQ 号万一还是失效了能自动重登救回；微信失效只能重新扫码。',
+          component: 'Input',
+          componentProps: {
+            placeholder: "默认 0 13 5 * * *（秒 分 时 日 月 周）"
           }
         },
         {

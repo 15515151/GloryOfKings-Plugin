@@ -597,9 +597,12 @@ class AuthStore {
       const globalAccounts = this.#sortAccountsByPriority(
         Object.values(pool.accounts).filter(account => account.isGlobalDefault)
       )
-      // 多个全局账号时轮换：每次调用（≈ 每次 HTTP 请求）把下一个号转到队首。
-      // 单账号时 #rotateGlobals 原样返回，顺序与引入轮询之前一致。
-      for (const globalAccount of this.#rotateGlobals(globalAccounts)) {
+      // ⚠️⚠️ 这里**不要再 rotate**：api.js 的 `#getAuthCandidates` 已经转过一次了。
+      //   两处都转 = 每次请求队首前进 **2** 格，池子大小是偶数时「奇数位永远当不上队首」
+      //   → **一半的账号从来不会被用到**（2026-09-19 实测：8 个号实际只用到 4 个，
+      //   另一半一直闲置到登录态失效，保活也救不到它们）。
+      //   轮转的活儿交给调用方做（api.js 那边有游标和日志），这里只负责「给全 + 排好序」。
+      for (const globalAccount of globalAccounts) {
         pushCandidate(globalAccount, 'global', `全局账号 ${globalAccount.userId}`)
       }
     }
