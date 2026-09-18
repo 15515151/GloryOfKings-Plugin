@@ -7,3 +7,6 @@ data/*
 server/
 *.css.map
 .DS_Store
+# 营地消息服务：代码住在 im-server 分支，部署时由 #营地消息部署 拉到这个目录。
+# ⚠️ 别和上面那个 server/ 混（那是观战服务，住 watch-server 分支）。
+server-im/

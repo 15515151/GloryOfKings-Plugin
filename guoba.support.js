@@ -204,6 +204,41 @@ export function supportGuoba () {
           }
         },
         {
+          component: 'Divider',
+          label: '营地消息'
+        },
+        {
+          field: 'config.campImApiUrl',
+          label: '营地消息服务地址',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（服务端代码在 im-server 分支，部署指令会自动拉下来并用 pm2 托管）。换成别的端口改这里即可，不用重启云崽。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '默认 http://127.0.0.1:8900'
+          }
+        },
+        {
+          field: 'config.campImEnabled',
+          label: '营地消息总开关',
+          bottomHelpMessage: '关掉后插件不再拉消息、也不再推私信（服务端照常收）。每个营地号的收发只推给它的归属人 —— 没有归属人的号一律不推。哪个号要收消息、哪个不要，去侧边栏的「营地消息」页面一个个开关。',
+          component: 'Switch'
+        },
+        {
+          field: 'config.campImPollMs',
+          label: '拉消息间隔（毫秒）',
+          bottomHelpMessage: '插件多久去服务端取一次新消息。走本机回环、没有风控，只影响推送延迟。别调太小（下限 1000）。',
+          component: 'InputNumber',
+          componentProps: {
+            min: 1000,
+            step: 1000
+          }
+        },
+        {
+          field: 'config.campImPushImage',
+          label: '推送带对方头像',
+          bottomHelpMessage: '开着的话推送会带对方在游戏里的头像。头像加载慢或发图失败时会自动降级成纯文字，不会丢消息。',
+          component: 'Switch'
+        },
+        {
           field: 'config.watchHintEnabled',
           label: '开播引导',
           bottomHelpMessage: '开了之后：订阅上下线提醒的人一上线，后台会盯着他进对局；进对局满设定分钟数、且确认这一局能看（是全局账号好友 + 排位/巅峰赛 + 没关战绩）时，往他订阅的群里发一条「要不要开播」的提示。群里任何人发 #营地开播 就能开这一路。',

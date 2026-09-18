@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>营地消息</title>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <h1>营地消息</h1>
+        <p>每个营地号的收发只推给它的归属人。关掉的号不会收消息。</p>
+      </div>
+      <div class="count" id="count">—</div>
+    </header>
+
+    <main class="content">
+      <div class="inner">
+        <div class="section-head">
+          <div>
+            <h2>账号列表</h2>
+            <p>开关只影响「收消息」，随时可改。</p>
+          </div>
+        </div>
+        <section class="list" id="list">
+          <div class="empty">加载中…</div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="save-dock hidden" id="dock">
+    <span id="dockText">有未保存的改动</span>
+    <button class="btn ghost" type="button" id="btnReset">撤销</button>
+    <button class="btn primary" type="button" id="btnSave">保存</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var q = new URLSearchParams(location.search)
+  var apiBase = q.get('__apiBase') || ''
+  var token = q.get('token') || ''
+  // 锅巴的兼容层会把 token 挂在 window.__GUOBA__ 上，两个来源都认
+  if (!token && window.__GUOBA__) token = window.__GUOBA__.token || ''
+  var API = apiBase + '/gok-camp-im/accounts'
+
+  var accounts = []
+  var saved = '[]'
+  var busy = false
+
+  var listEl = document.getElementById('list')
+  var dockEl = document.getElementById('dock')
+  var dockText = document.getElementById('dockText')
+  var countEl = document.getElementById('count')
+  var toastEl = document.getElementById('toast')
+  var btnSave = document.getElementById('btnSave')
+  var btnReset = document.getElementById('btnReset')
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  }
+
+  function req(method, body) {
+    var opt = { method: method, headers: {} }
+    if (token) opt.headers['guoba-access-token'] = token
+    if (body) {
+      opt.headers['Content-Type'] = 'application/json'
+      opt.body = JSON.stringify(body)
+    }
+    return fetch(API, opt).then(function (r) {
+      return r.json().then(function (d) {
+        if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status))
+        return d
+      })
+    })
+  }
+
+  function snapshot() {
+    return JSON.stringify(accounts.map(function (a) {
+      return { userId: a.userId, enable: a.enable }
+    }))
+  }
+
+  function dirty() { return snapshot() !== saved }
+
+  function toast(text, bad) {
+    toastEl.textContent = text
+    toastEl.className = 'toast show' + (bad ? ' bad' : '')
+    clearTimeout(toast._t)
+    toast._t = setTimeout(function () { toastEl.className = 'toast' }, 2600)
+  }
+
+  function syncDock() {
+    var on = dirty()
+    dockEl.classList.toggle('hidden', !on)
+    if (on) {
+      var n = accounts.filter(function (a) { return a.enable }).length
+      dockText.textContent = n + ' 个号将接收消息'
+    }
+  }
+
+  function render() {
+    var enabled = accounts.filter(function (a) { return a.enable }).length
+    var all = accounts.length
+    countEl.textContent = enabled + ' / ' + all + ' 已启用'
+    countEl.classList.toggle('has-off', enabled !== all)
+
+    if (!all) {
+      listEl.innerHTML = '<div class="empty"><b>还没有营地账号</b>'
+        + '<span>发 #营地wx全局登录 扫码添加</span></div>'
+      return
+    }
+
+    listEl.innerHTML = accounts.map(function (a, i) {
+      var name = a.nickname || ('营地号 ' + a.userId)
+      var avatar = a.avatar
+        ? '<img class="av" src="' + esc(a.avatar) + '" alt="" onerror="this.className=\'av fallback\';this.textContent=\'' + esc(name.slice(0, 1)) + '\';this.removeAttribute(\'src\')" />'
+        : '<span class="av fallback">' + esc(name.slice(0, 1)) + '</span>'
+      var ownerTag = a.owner
+        ? '<span class="tag owner">归属 ' + esc(a.ownerMasked) + '</span>'
+        : '<span class="tag orphan">无归属 · 不推</span>'
+      return '' +
+        '<article class="card' + (a.enable ? '' : ' off') + '">' +
+          avatar +
+          '<div class="info">' +
+            '<div class="title"><span class="name">' + esc(name) + '</span>' + ownerTag + '</div>' +
+            '<div class="meta"><span>ID: ' + esc(a.userId) + '</span></div>' +
+          '</div>' +
+          '<div class="actions">' +
+            '<label class="toggle"><input type="checkbox" data-index="' + i + '"' + (a.enable ? ' checked' : '') + ' /><i></i></label>' +
+          '</div>' +
+        '</article>'
+    }).join('')
+
+    Array.prototype.forEach.call(listEl.querySelectorAll('input[type=checkbox]'), function (el) {
+      el.addEventListener('change', function () {
+        var i = Number(el.dataset.index)
+        accounts[i].enable = el.checked
+        render()
+      })
+    })
+  }
+
+  function load() {
+    req('GET').then(function (d) {
+      accounts = d.accounts || []
+      saved = snapshot()
+      render()
+      syncDock()
+    }).catch(function (e) {
+      listEl.innerHTML = '<div class="empty"><b>读不到账号列表</b><span>' + esc(e.message) + '</span></div>'
+    })
+  }
+
+  btnSave.addEventListener('click', function () {
+    if (busy) return
+    busy = true
+    btnSave.disabled = true
+    req('POST', {
+      accounts: accounts.map(function (a) {
+        return { userId: a.userId, enable: a.enable }
+      })
+    }).then(function (d) {
+      accounts = d.accounts || accounts
+      saved = snapshot()
+      render()
+      syncDock()
+      toast(d.message || '已保存')
+    }).catch(function (e) {
+      toast('保存失败：' + e.message, true)
+    }).then(function () {
+      busy = false
+      btnSave.disabled = false
+    })
+  })
+
+  btnReset.addEventListener('click', function () {
+    var base = JSON.parse(saved)
+    accounts = base.map(function (s) {
+      var full = accounts.filter(function (a) { return a.userId === s.userId })[0] || {}
+      return Object.assign({}, full, { enable: s.enable })
+    })
+    render()
+    syncDock()
+  })
+
+  load()
+})()
+</script>
+</body>
+</html>
