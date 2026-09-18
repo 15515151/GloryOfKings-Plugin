@@ -150,6 +150,8 @@ pnpm install
 > cd plugins/GloryOfKings-Plugin/server
 > pm2 start watch-server.js --name gok-watch --interpreter node && pm2 save
 > ```
+> ⚠️ **改服务端代码请另开一个克隆或 `git worktree`**：别在主工作区 `git checkout watch-server` ——
+> `server/` 是被 `.gitignore` 挡住的，切回 master 时 git 会把它**整个删掉**。
 
 服务默认监听 `8899`。装完记得在配置里把**直播间对外地址**填成外网能访问的（域名或公网 IP），
 不然发出去的链接只有本机能开、群友点了是白屏。别忘了防火墙 / 安全组放行这个端口。
