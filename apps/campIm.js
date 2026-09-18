@@ -43,6 +43,14 @@ function pollMs () {
 /** 重入闸：上一轮没跑完就跳过这一轮 */
 let polling = false
 let pollTimer = null
+/** 上次同步开关时的快照 —— 变了才调服务端，别每轮都打 */
+let lastSwitchSnapshot = ''
+
+/** 当前开关快照（用于比对有没有变化） */
+function switchSnapshot () {
+  const s = store.getAccountSwitches()
+  return JSON.stringify(Object.keys(s).sort().map(k => [k, s[k]]))
+}
 
 /**
  * 拉一次消息并分派。
@@ -52,6 +60,14 @@ async function pollOnce () {
   if (polling) return
   polling = true
   try {
+    // ⭐ 开关变了就同步给服务端（主人在锅巴页面改完，这里几秒内生效）
+    const snap = switchSnapshot()
+    if (snap !== lastSwitchSnapshot) {
+      const r = await syncAccounts()
+      // 同步成功才记快照；失败下轮重试
+      if (r.ok) lastSwitchSnapshot = snap
+    }
+
     const since = store.getCursor()
     const res = await client.getMessages(since)
     if (!res?.ok) return
@@ -107,7 +123,11 @@ export function stopPolling () {
 
 /**
  * 把「开启了 ws 的账号」同步给服务端。
- * 启动时调一次；锅巴页面改了开关也可以手动调。
+ *
+ * 什么时候调：
+ *   · 插件启动时一次（见文件末尾的 bootstrap）
+ *   · `#营地消息同步` 手动触发
+ *   · 轮询里**每隔一段时间**自动对一次 —— 主人在锅巴页面改完开关不用等重启
  */
 export async function syncAccounts () {
   try {

@@ -7,10 +7,11 @@
  *
  * ## 长什么样
  * ```
- * [游戏头像图]                    ← fromRoleIcon（不是营地账号头像！）
- * 📩 ccxhan · 我就只会补兵
+ * [头像图]                        ← 游戏头像 fromRoleIcon；没有就回落 QQ 头像
+ * 📩 我就只会补兵                 ← 只留游戏角色名
  * 你干嘛呢
- * ─────────────
+ * （微信安卓 荣耀王者）
+ *
  * 回复：引用这条消息，或发 #营地回复 1580886057 <内容>
  * ```
  *
@@ -21,6 +22,7 @@ import authStore from './authStore.js'
 import { sendPrivate } from './privateMsg.js'
 import { addRef } from './campImStore.js'
 import { sendMaster } from './masterMsg.js'
+import { qlogoUrl } from './avatar.js'
 
 // ⚠️ `segment` 是云崽的全局变量（lib/plugins/loader.js 里 global.segment = segment），
 //    不能从 #components import —— 本仓库其他文件（如 apps/heroDetail.js）也是直接用全局的。
@@ -54,13 +56,17 @@ function clip (s, n = 20) {
 
 /**
  * 组装私信内容。
+ *
+ * 头像优先级：**游戏头像（`fromRoleIcon`）优先，取不到回落 QQ 头像**。
+ *   · 游戏头像只有「在游戏客户端里发」的消息才带；用 HTTP 发的裸文本没有
+ *   · 回落用 `qlogoUrl`（`utils/avatar.js`），只在对方是 QQ 号时拼得出来
+ *     （微信区的营地号拼不出 QQ 头像，那就干脆不带图）
+ *
  * @returns {{text: string, image: string}}
  */
-function buildContent (msg, selfNick) {
-  const who = []
-  if (selfNick) who.push(clip(selfNick, 12))
-  if (msg.fromRoleName) who.push(clip(msg.fromRoleName, 16))
-  const title = who.length ? who.join(' · ') : clip(msg.fromUserId, 12)
+function buildContent (msg) {
+  // ⭐ 只留角色名（游戏里的名字），不带营地账号昵称 —— 两个名字摆一起反而看不清谁是谁
+  const title = clip(msg.fromRoleName, 16) || clip(msg.fromUserId, 12)
 
   const lines = [
     `📩 ${title}`,
@@ -69,10 +75,17 @@ function buildContent (msg, selfNick) {
   if (msg.fromRoleDesc) lines.push(`（${clip(msg.fromRoleDesc, 24)}）`)
   lines.push('', `回复：引用这条消息，或发 #营地回复 ${msg.selfUserId} <内容>`)
 
-  return {
-    text: lines.join('\n'),
-    image: msg.fromRoleIcon || ''
+  // 游戏头像优先；没有就用发信人的 QQ 头像兜底
+  let image = msg.fromRoleIcon || ''
+  if (!image) {
+    try {
+      image = qlogoUrl(msg.fromUserId, 100) || ''
+    } catch {
+      image = ''
+    }
   }
+
+  return { text: lines.join('\n'), image }
 }
 
 /**
@@ -87,14 +100,7 @@ export async function pushToOwner (msg, { bot } = {}) {
   const owner = ownerOf(msg.selfUserId)
   if (!owner) return { ok: false, reason: 'no_owner' }   // 无归属 → 按约定不管
 
-  // 自己号的名字（用于「谁的号收到了」）
-  let selfNick = ''
-  try {
-    const acc = authStore.getAccount(String(msg.selfUserId))
-    selfNick = acc?.nickname || acc?.userName || ''
-  } catch {}
-
-  const { text, image } = buildContent(msg, selfNick)
+  const { text, image } = buildContent(msg)
   const withImage = pushImageEnabled() && Boolean(image)
 
   // ① 带头像图发（图是营地 CDN 的 URL，直接给 segment.image 就行）
