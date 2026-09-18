@@ -61,6 +61,7 @@ import {
   MAX_DETAIL_BATTLES,
   REQUEST_INTERVAL,
   DEFAULT_IDLE_BACKOFF_MAX,
+  decideHint,
   sleep
 } from '../utils/pushStore.js'
 import { fetchBattleDetail, renderBattleDetail } from '../utils/battleDetailImage.js'
@@ -119,6 +120,27 @@ let recoverRounds = 0
 
 /** 命中频控后的安静期截止时刻（ms），0 = 不在安静期 */
 let quietUntil = 0
+
+/**
+ * 盯梢轮询的重入闸。
+ *
+ * ⚠️ 盯梢是插件里**唯一的 setInterval**（间隔见配置 `watchHintPollMs`，默认 15 秒），
+ *    一轮要打营地接口、可能慢到几秒；没有这道闸的话下一轮会叠上来，
+ *    请求量翻倍往上叠，而营地频控命中要静默 12 小时。
+ *    和 server/watch-server.js 的 `tickRunning` 是同一个套路。
+ */
+let hintRunning = false
+
+/**
+ * 盯梢最长盯多久。上线后一直不进对局（在大厅挂着、开着客户端没打）的，
+ * 超过这个时长就放弃 —— 否则每条盯梢都会挂到天荒地老、每 15 秒白打一次接口。
+ *
+ * ⚠️ 这个超时同时兜住**隐私号**：关了战绩隐私的号查出来和「还没进对局」一模一样
+ *    （都是 rc=0 + isGaming=false + gaming=null，见 pushStore.decideHint 的注释），
+ *    分不出来，只能靠超时收手。所以别调太长 —— 隐私号会一直白打请求到超时为止。
+ *    15 分钟 ≈ 60 次请求，是可接受的上限；正常上线后几分钟内就开局了。
+ */
+const HINT_WATCH_MAX_MS = 15 * 60 * 1000
 
 export class GameRecordPush extends plugin {
   constructor () {
@@ -937,6 +959,214 @@ export class GameRecordPush extends plugin {
       // 比营地的 onlineTime 可靠（那个字段实测会是几个月前的陈旧值）
       onlineSince: kind === 'online' ? String(resolveOnlineSince(state.onlineTime, nowSec, true)) : ''
     })
+
+    // ⚠️ 盯梢**不在这里**启动 —— 见 hintTick 的注释：
+    //    一开始把「开始盯梢」挂在「上线」这个跨越上，结果主人一直在打游戏
+    //    （gameOnline 恒为 2、没有 0→非0 的跨越）时盯梢永远不启动，
+    //    「开局 5 分钟了也不问开播」（2026-09-17 主人反馈）。
+    //    现在改成由 hintTick 每轮按「在打 + 这一局还没提示过」自己挑人。
+    if (kind === 'offline' && sub.hintWatching === '1') {
+      // 下线了就别再盯了
+      mergeSubState(qq, { hintWatching: '', hintSince: '' })
+    }
+  }
+
+  /**
+   * 盯梢轮询：挑出「在打且这一局还没提示过」的订阅，查一次对局状态，到点就发开播提示。
+   *
+   * ⚠️⚠️ **这是插件里唯一的 setInterval**（其余定时都是 cron task）。所以：
+   *    · 整个函数包在 try/catch 里 —— 定时器里抛出的异常会掀掉整个云崽进程；
+   *    · 自建 `hintRunning` 闸防重入（一轮没跑完下一轮又进来会打双份请求）；
+   *    · 只遍历 `hintWatching === '1'` 的订阅，不是全部订阅 —— 请求量才可控。
+   *
+   * 频控：查的是 `getMoreBattleList`（走 `#makeAuthRequest`，有账号轮询 + 冷却 + 换号），
+   * 命中 -30107 会抛到这里，跳过本轮即可（api.js 已经做了账号级冷却）。
+   */
+  async hintTick () {
+    if (hintRunning) return
+    hintRunning = true
+    try {
+      if (readConfig().watchHintEnabled === false) return
+
+      const cfg = readConfig()
+      const afterMin = Math.max(1, Number(cfg.watchHintAfterMin) || 3)
+      const now = Date.now()
+
+      // ⭐ 挑「该盯的人」。判据**只有两个**，而且**不依赖「上线」这个瞬间**：
+      //    ① 开了上下线提醒（主人的意思：只服务订阅了上下线的人）
+      //    ② 快照里 `lastGaming === '1'`（在打），且这一局的 `lastGamingStart`
+      //       还没提示过（`hintGamingStart` 记的是已提示过的那一局）
+      //
+      //    ⚠️⚠️ 为什么不能用「上线」当启动条件（原先的写法，踩过）：
+      //       主人一直在打游戏时 `gameOnline` 恒为 2、**没有 0→非0 的跨越**，
+      //       `checkOnline` 里的 `kind === 'online'` 永远不成立 → 盯梢永远不启动 →
+      //       「开局 5 分钟了也不问开播」（2026-09-17 主人反馈）。
+      //       改成按「在打 + 没提示过这局」挑，连打十局也每局都会问。
+      //
+      //    ⚠️ 这一轮**只读快照、不发请求**（loadPushList 读本地 YAML），
+      //       真正要查的只有下面挑出来的那几个 —— 请求量才控得住。
+      const list = loadPushList()
+      const targets = []
+      for (const [qq, sub] of Object.entries(list)) {
+        if (isBlackUser(qq) || !isFlagOn(sub, 'online')) continue
+        // 一个群都没有的（退群了）：`send` 会直接返回 false，留着就是每轮白查一次
+        if (!subGroups(sub).length) continue
+        const gamingStart = String(sub.lastGamingStart || '')
+        const inGame = String(sub.lastGaming || '') === '1'
+        const watching = sub.hintWatching === '1'
+        // 既没在盯、又没在打 → 没事
+        if (!watching && !inGame) continue
+        // 这一局已经处理过了（问过了 / 明确看不了 / 盯超时了）→ 不盯
+        // ⚠️ 判据是 `hintGamingStart`，**所有「放弃」路径都必须写它** ——
+        //    只清 `hintWatching` 的话下一轮 `inGame` 还是 true、`gamingStart` 还是对不上，
+        //    又被挑中 → 又盯/又放弃 → 无限循环（实测踩过，见下面两处注释）
+        if (gamingStart && gamingStart === String(sub.hintGamingStart || '')) continue
+
+        // 盯太久了就放弃：上线后一直没开局、或隐私号永远拿不到 gaming，都靠它收手
+        if (watching) {
+          const since = Number(sub.hintSince) || 0
+          if (since > 0 && now - since > HINT_WATCH_MAX_MS) {
+            logger.debug(`[王者推送] ${qq} 盯梢超时（${Math.round(HINT_WATCH_MAX_MS / 60000)} 分钟），放弃`)
+            // ⚠️ 必须连 `hintGamingStart` 一起写，否则下一轮又被挑中 → 再盯 15 分钟（死循环）
+            mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gamingStart })
+            continue
+          }
+        } else {
+          // 第一次发现他在打 → 记下开始盯的时刻（超时计时用）
+          mergeSubState(qq, { hintWatching: '1', hintSince: String(now) })
+          sub.hintSince = String(now)
+        }
+        targets.push([qq, sub])
+      }
+
+      for (const [qq, sub] of targets) {
+        let data
+        try {
+          data = await fetchLatest(String(sub.campId || ''), qq)
+        } catch (error) {
+          // 频控 / 网络问题：这轮跳过，下轮再试（别清 hintWatching，否则一次抖动就放弃盯梢）
+          logger.debug(`[王者推送] ${qq} 盯梢查询失败：${error.message}`)
+          continue
+        }
+
+        const { action, minutes, reason } = decideHint(data, afterMin)
+        // `wait` 有两种：真没进对局（继续盯），或**接口失败**（下轮重试）—— 都什么都不动
+        if (action === 'wait') continue
+
+        // 这一局的去重键：优先用**实时值**（比快照准）；隐私号拿不到 gaming，退回快照值
+        const gameKey = String(data?.gaming?.dtEventTime || sub.lastGamingStart || '')
+
+        if (action === 'drop') {
+          logger.debug(`[王者推送] ${qq} 盯梢放弃：${reason}`)
+          // ⚠️ 放弃也要记下这一局，否则下一轮又被挑中白查（同上的死循环）
+          mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
+          continue
+        }
+
+        // ⚠️⚠️ **同一局只推一次**（主人定的，2026-09-17）。
+        //    上面挑人时比的是**快照**里的 `lastGamingStart`，而快照由 checkAll 每 2 分钟才刷一次 ——
+        //    滞后那两分钟里它跟实时值对不上，会让同一局被反复挑中、反复推（实测重复推送）。
+        //    所以拿到**实时数据**后再比一次：`gaming.dtEventTime` 一局之内恒定，
+        //    它等于已推过的那个值就说明这局问过了，直接收手。
+        const liveStart = String(data.gaming?.dtEventTime || '')
+        if (liveStart && liveStart === String(sub.hintGamingStart || '')) {
+          logger.debug(`[王者推送] ${qq} 这一局已经问过了（${liveStart}），收手`)
+          mergeSubState(qq, { hintWatching: '', hintSince: '' })
+          continue
+        }
+
+        // action === 'hint'：先确认「这个号是某个全局账号的好友」再发 ——
+        // 取流必须过「是不是好友」这关（-1003 是关系判据不是隐私），
+        // 不是好友的话提示了群友也开不了。判定放在这一步（而不是盯梢一开始）
+        // 是为了不白查：只有真的到点了才值得问一次服务端。
+        const friend = await this.isFriendCampId(sub.campId)
+        // ⚠️ `null` = **查不到**（观战服务没起 / 抽风）—— 不能当成「不是好友」，
+        //    那会把这一局直接标记成处理过、再也不问。保留盯梢，下轮重试。
+        if (friend === null) continue
+        if (friend === false) {
+          logger.debug(`[王者推送] ${qq} 的营地 ${sub.campId} 不是任何全局账号的好友，不发提示`)
+          mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
+          continue
+        }
+
+        const ok = await this.sendHint(qq, sub, data.gaming, minutes)
+        // ⚠️ 只有真发出去了才记「这局提示过」—— 发送失败（群取不到）时留着下轮重试，
+        //    否则这条提示就永远丢了
+        if (ok) {
+          mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
+        }
+      }
+    } catch (error) {
+      // 定时器里绝不能把异常抛出去
+      logger.error(`[王者推送] 盯梢轮询出错：${error.message}`)
+    } finally {
+      hintRunning = false
+    }
+  }
+
+  /**
+   * 这个营地号是不是「某个全局账号的好友」。
+   *
+   * 问服务端 `/api/friends`（它的 `friendCampIds` 是**所有全局账号好友的并集**）——
+   * 插件端没有 getcampfriends，好友关系只有服务端拿得到。
+   * 服务没起 / 没配观战地址时返回 false（不提示）—— 观战服务不在线时提示也没用。
+   */
+  /**
+   * 这个营地号是不是「某个全局账号的好友」。
+   *
+   * 问服务端 `/api/friends`（它的 `friendCampIds` 是**所有全局账号好友的并集**）——
+   * 插件端没有 getcampfriends，好友关系只有服务端拿得到。
+   *
+   * @returns {Promise<boolean|null>} `true`/`false` = 明确结论；
+   *   **`null` = 查不到**（观战服务没起、返回异常、网络不通）。
+   *   ⚠️ 调用方**必须**把 null 和 false 分开处理：把「查不到」当成「不是好友」的话，
+   *      一次服务抖动就会把这一局标记成已处理、再也不问（实测踩过）。
+   */
+  async isFriendCampId (campId) {
+    const id = String(campId || '')
+    if (!id) return false
+    try {
+      const data = await callWatchApi('/api/friends')
+      if (!data?.ok) return null
+      return (data.friendCampIds || []).includes(id)
+    } catch (error) {
+      logger.debug(`[王者推送] 查好友失败（观战服务没起？）：${error.message}`)
+      return null
+    }
+  }
+
+  /**
+   * 发开播提示，并把这一场的坐标记到服务端（供群友发 `#营地开播` 时开播）。
+   *
+   * ⚠️ 坐标必须存**服务端**：`watcher`/`owners`（这个好友能被哪些账号看到）只有服务端知道，
+   *    而取流必须用「加了这个好友的那个账号」（换号一律 -1003）。
+   */
+  async sendHint (qq, sub, gaming, minutes) {
+    const name = sub.roleName || await this.resolveDisplayName(qq, sub)
+    const text = `${name} 已经开局 ${minutes} 分钟了\n要不要开一路观战？发 #营地开播`
+    const ok = await this.send(qq, sub, text)
+    if (!ok) return false
+
+    // 记坐标给「#营地开播」用。服务端会自己去 /api/friends 里查 watcher/owners，
+    // 这里只需要给 battleID + campId 就够定位
+    const groups = subGroups(sub)
+    for (const gid of groups) {
+      try {
+        await callWatchApi('/api/hint/remember', {
+          method: 'POST',
+          body: {
+            groupId: gid,
+            battleID: String(gaming?.battleId || ''),
+            campId: String(sub.campId || ''),
+            nick: name
+          }
+        })
+      } catch (error) {
+        logger.debug(`[王者推送] 记开播坐标失败（群 ${gid}）：${error.message}`)
+      }
+    }
+    logger.mark(`[王者推送] ${qq} 开局满 ${minutes} 分钟，已发开播提示（${sub.campId}）`)
+    return true
   }
 
   /**
@@ -1091,7 +1321,65 @@ function readConfig () {
   }
 }
 
+/**
+ * 调观战服务（server/watch-server.js，pm2 名 gok-watch）。
+ *
+ * 盯梢要用它两件事：查「这个号是不是某个全局账号的好友」（`friendCampIds`）、
+ * 记下开播坐标供 `#营地开播` 用。
+ *
+ * ⚠️ 和 apps/watchBattle.js 的 callApi 是同一套（那边没导出，各写一份）。
+ *    服务没起时**抛异常**，由调用方兜住 —— 盯梢只是锦上添花，不该因此报错刷屏。
+ */
+async function callWatchApi (path, { method = 'GET', body = null, timeout = 15000 } = {}) {
+  const base = String(readConfig().watchApiUrl || 'http://127.0.0.1:8899').replace(/\/+$/, '')
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeout)
+  try {
+    const r = await fetch(base + path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctl.signal
+    })
+    const text = await r.text()
+    try {
+      return JSON.parse(text)
+    } catch {
+      logger.error(`[王者推送] 观战服务 ${path} 返回的不是 JSON（HTTP ${r.status}）`)
+      return { ok: false, error: '观战服务返回异常' }
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** 索引里所有群号。影子订阅要扫「群里有哪些人」，得先有群的全集 */
 function listAllGroupIds () {
   return Object.keys(getGroupIndex().groups || {})
 }
+
+/**
+ * 盯梢轮询：独立于 cron 的短间隔定时器，只服务「上线后盯开局」这一件事。
+ *
+ * ⚠️⚠️ **必须放在模块顶层，不能写进 constructor** —— Yunzai 的 loader 每收到一条消息
+ *    都会给每个 plugin 类 new 一个实例，写在 constructor 里等于每条消息都排一个定时器
+ *    （`apps/cacheManager.js:111` 记过这个坑）。
+ *
+ * ⚠️ 间隔取自配置 `watchHintPollMs`（默认 15 秒）。这是插件里唯一的 setInterval，
+ *    所以：异常在 `hintTick` 里兜死、重入有 `hintRunning` 闸、只遍历盯梢中的订阅。
+ *    `.unref?.()` 让它在没有其它任务时能正常退出（别拖着进程不让关）。
+ */
+function startHintTicker () {
+  const raw = Number(readConfig().watchHintPollMs)
+  // 下限 5 秒：再快就是拿营地频控（命中静默 12 小时）开玩笑
+  const ms = Math.max(5000, raw > 0 ? raw : 15000)
+  // ⚠️ 用 Object.create 拿原型方法，**不要 `new GameRecordPush()`** ——
+  //    constructor 里会跑 `super()` 注册 rule/task，在这里再跑一次是重复注册。
+  //    盯梢用到的 send / resolveDisplayName / hintTick 都只用参数和模块级函数，
+  //    不依赖实例状态，所以不跑 constructor 完全够用。
+  const inst = Object.create(GameRecordPush.prototype)
+  setInterval(() => { inst.hintTick() }, ms).unref?.()
+  logger.debug(`[王者推送] 开播盯梢定时器已启动（每 ${Math.round(ms / 1000)} 秒）`)
+}
+
+startHintTicker()

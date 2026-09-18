@@ -183,6 +183,56 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
+          label: '营地观战'
+        },
+        {
+          field: 'config.watchApiUrl',
+          label: '观战服务地址',
+          bottomHelpMessage: '观战要另跑一个后端进程 server/watch-server.js（负责取直播流、录像），插件通过这个地址指挥它。部署命令：pm2 start plugins/GloryOfKings-Plugin/server/watch-server.js --name gok-watch --interpreter node 然后 pm2 save。换成别的端口改这里即可，不用重启云崽。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '默认 http://127.0.0.1:8899'
+          }
+        },
+        {
+          field: 'config.watchPublicUrl',
+          label: '直播间对外地址',
+          bottomHelpMessage: '发到群里、给群友点开的那个地址。留空 = 用上面的，但 127.0.0.1 只有本机能开，群友点了是白屏 —— 所以部署时一定填成外网能访问的（域名或公网 IP）+ 端口，比如 http://abc.com:8899。注意防火墙/安全组要放行这个端口。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '留空 = 用上面的地址'
+          }
+        },
+        {
+          field: 'config.watchHintEnabled',
+          label: '开播引导',
+          bottomHelpMessage: '开了之后：订阅上下线提醒的人一上线，后台会盯着他进对局；进对局满设定分钟数、且确认这一局能看（是全局账号好友 + 排位/巅峰赛 + 没关战绩）时，往他订阅的群里发一条「要不要开播」的提示。群里任何人发 #营地开播 就能开这一路。',
+          component: 'Switch'
+        },
+        {
+          field: 'config.watchHintAfterMin',
+          label: '开局多少分钟后提示',
+          bottomHelpMessage: '进对局满这么多分钟才发开播提示。太早发的话营地那边可能还没把流推起来，点开要等；3 分钟是实测比较稳的值。',
+          component: 'InputNumber',
+          componentProps: {
+            min: 1,
+            max: 30,
+            placeholder: '默认 3'
+          }
+        },
+        {
+          field: 'config.watchHintPollMs',
+          label: '盯梢轮询间隔（毫秒）',
+          bottomHelpMessage: '盯梢期间多久查一次对局状态，默认 15000（15 秒）。别调太小 —— 营地接口有频控，命中一次该账号要静默 12 小时。下限 5000。',
+          component: 'InputNumber',
+          componentProps: {
+            min: 5000,
+            step: 1000,
+            placeholder: '默认 15000'
+          }
+        },
+        {
+          component: 'Divider',
           label: '图片缓存'
         },
         {
@@ -292,7 +342,7 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
-          label: '命令入口：#营地wx登录 / #王者帮助 / #王者设置 / #营地wx全局登录 / #王者用户统计 / #清理失效营地账号 / #开启战绩推送 / #关闭战绩推送 / #开启上下线提醒 / #关闭上下线提醒 / #战绩推送状态 / #清空王者战绩推送'
+          label: '命令入口：#营地wx登录 / #王者帮助 / #王者设置 / #营地观战 / #营地wx全局登录 / #王者用户统计 / #清理失效营地账号 / #开启战绩推送 / #关闭战绩推送 / #开启上下线提醒 / #关闭上下线提醒 / #战绩推送状态 / #清空王者战绩推送'
         },
         {
           field: 'authPool.accounts',

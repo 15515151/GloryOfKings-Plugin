@@ -50,10 +50,12 @@ export class AccountManager extends plugin {
           reg: new RegExp('^#营地wx登录$', 'i'),
           fnc: 'wechatScanLogin'
         },
+        // 两条全局登录**所有人都能发**：登录态记在扫码人自己名下（ownerBotUserId），
+        // #营地观战 就靠它认「谁的营地好友」。谁扫的号只喂谁的观战名单，
+        // 不会因为开放就串到别人的好友列表上。
         {
           reg: new RegExp('^#营地wx全局登录$', 'i'),
-          fnc: 'wechatGlobalScanLogin',
-          permission: 'master'
+          fnc: 'wechatGlobalScanLogin'
         },
         // 四条登录/全局登录一律带 `i`：手机上打「qq」「wx」比大写顺手，
         // 用户不该为了大小写重发一遍。字符串形式的 reg 没法写内联标志，
@@ -64,8 +66,7 @@ export class AccountManager extends plugin {
         },
         {
           reg: new RegExp('^#营地QQ全局登录$', 'i'),
-          fnc: 'qqGlobalScanLogin',
-          permission: 'master'
+          fnc: 'qqGlobalScanLogin'
         },
         {
           reg: '^#王者用户统计$',
@@ -601,7 +602,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想让机器人也用上这个号，请主人发【#营地wx全局登录】。'
+        '\n想用 #营地观战 看好友对局，发【#营地wx全局登录】。'
       ]
     })
   }
@@ -612,7 +613,7 @@ export class AccountManager extends plugin {
       mode: 'global',
       qrPromptLines: [
         `请扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后这个号会写入全局账号池；池中有多个全局账号时，请求会在它们之间自动轮询。'
+        '\n登录成功后发 #营地观战，就能看你营地好友里谁在打。'
       ]
     })
   }
@@ -679,7 +680,7 @@ export class AccountManager extends plugin {
       qrPromptLines: [
         `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
         '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想让机器人也用上这个号，请主人发【#营地wx全局登录】。'
+        '\n想用 #营地观战 看好友对局，发【#营地QQ全局登录】。'
       ]
     })
   }
@@ -690,7 +691,7 @@ export class AccountManager extends plugin {
       mode: 'global',
       qrPromptLines: [
         `请用手机 QQ 扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后这个号会写入全局账号池；池中有多个全局账号时，请求会在它们之间自动轮询。'
+        '\n登录成功后发 #营地观战，就能看你营地好友里谁在打。'
       ]
     })
   }
@@ -710,7 +711,7 @@ export class AccountManager extends plugin {
       await this.recallWechatLoginMessages(e, pending)
 
       if (mode === 'global') {
-        await this.finishGlobalWechatLogin(e, result)
+        await this.finishGlobalWechatLogin(e, botUserId, result)
       } else {
         await this.finishPersonalWechatLogin(e, botUserId, result)
       }
@@ -761,28 +762,37 @@ export class AccountManager extends plugin {
     await this.replyBindResultCard(e, botUserId, account.userId)
   }
 
-  async finishGlobalWechatLogin(e, result) {
+  async finishGlobalWechatLogin(e, botUserId, result) {
     const account = result.account || {}
-    const savedAccount = authStore.upsertGlobalAccount(account)
+    // ⚠️ ownerBotUserId 必须写：#营地观战 靠它认「这个号是谁扫的」，
+    // 只把发起人自己扫的号拿去查好友。漏了这个字段，这个号在观战里就等于不存在。
+    const savedAccount = authStore.upsertGlobalAccount({
+      ...account,
+      ownerBotUserId: botUserId
+    })
     // 全局账号是可以有多个的（轮询池），所以扫码后要报当前池子大小，
     // 否则主人扫第二个号时会以为把第一个覆盖了。
     const globalCount = authStore.listAccounts().filter(item => item.isGlobalDefault).length
 
     logger.info('[营地全局账号] 已通过扫码写入全局账号池', {
+      botUserId,
       userId: savedAccount.userId,
       nickname: savedAccount.nickname || savedAccount.userName || '',
       globalCount
     })
 
-    await e.reply([
-      `全局账号已写入账号池（当前 ${globalCount} 个）。`,
+    const lines = [
+      '全局登录成功。',
       `\n营地ID：${savedAccount.userId || '未获取'}`,
       `\n昵称：${savedAccount.nickname || savedAccount.userName || '未命名'}`,
-      globalCount > 1
-        ? `\n请求会在这 ${globalCount} 个全局账号之间轮换，摊平单号的请求量。`
-        : '\n再用另一个微信/QQ 营地账号执行一次本指令，它就会加入轮询池。',
+      '\n发送 #营地观战 看你营地好友里谁在打。',
       '\n有效期约 30 天，失效了重发这条指令。'
-    ])
+    ]
+    // 池子大小只报给主人：他要靠这个数判断请求摊得够不够开，普通用户看了没用
+    if (e.isMaster) {
+      lines.splice(1, 0, `\n当前账号池共 ${globalCount} 个全局账号。`)
+    }
+    await e.reply(lines)
   }
 
   async waitForWechatLoginResult(e, botUserId, taskId, session, mode = 'personal') {
@@ -800,7 +810,7 @@ export class AccountManager extends plugin {
       await this.recallWechatLoginMessages(e, pending)
 
       if (mode === 'global') {
-        await this.finishGlobalWechatLogin(e, result)
+        await this.finishGlobalWechatLogin(e, botUserId, result)
       } else {
         await this.finishPersonalWechatLogin(e, botUserId, result)
       }

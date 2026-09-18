@@ -910,6 +910,83 @@ export function formatGamingText (gaming, heroMap = {}, name = '') {
   return lines.join('\n')
 }
 
+/* ------------------------------------------------------- 开播提示（盯梢） */
+
+/**
+ * 能观战的模式 —— ⚠️ **判据本体在 `utils/watchMode.js`**（唯一一份），这里只做转出。
+ *
+ * 以前这里和 `server/lib/camp.js` 各写一份 `new Set([4, 14])`，靠注释提醒两边都改；
+ * 漏改就会「列表说能看、盯梢说不能看」。现在服务端直接 import 同一份，
+ * 改一处就够了 —— 别在这儿重新定义。
+ */
+export { isWatchableMode } from './watchMode.js'
+
+/**
+ * 这一局已经打了多久（分钟）。算不出来返回 -1。
+ *
+ * `gaming.dtEventTime` 是**秒级字符串**（实测 1789641772），要 ×1000 才和 Date.now() 同量纲。
+ * 服务端时间跟本地可能有偏差，负值 / 超过一天的都当「算不出来」——
+ * 宁可不提示，也不能拿一个离谱的时长去判「满 3 分钟了」。
+ *
+ * @param {object} gaming data.gaming
+ * @param {number} [now] 当前毫秒时间戳
+ * @returns {number} 分钟数，-1 = 算不出来
+ */
+export function gamingMinutes (gaming, now = Date.now()) {
+  const start = toInt(gaming?.dtEventTime) * 1000
+  if (!start) return -1
+  const ms = now - start
+  if (ms < 0 || ms > 24 * 3600 * 1000) return -1
+  return Math.floor(ms / 60000)
+}
+
+/**
+ * 这条盯梢该不该发开播提示、还是该放弃。
+ *
+ * 盯梢的来龙去脉：订阅者上线 → 我们开始盯他进对局 → 进对局满 N 分钟且**能看**时
+ * 往群里发一条「要不要开播」。三种结局：
+ *
+ *   `hint`   → 发提示（模式能看 + 已满 N 分钟）
+ *   `wait`   → 还没进对局 / 时长还不够，继续盯
+ *   `drop`   → 放弃（模式不支持、查不到战绩）
+ *
+ * ⚠️⚠️ **「隐私」和「还没进对局」在数据上分不出来，别以为能区分**：
+ *    实测关战绩隐私的号（`choiceitem` 里看着在打）查 `morebattlelist` 拿到的是
+ *    `rc=0` + `isGaming=false` + `gaming=null` —— 和「刚上线还没开打」**一模一样**。
+ *    所以这里只能返回 `wait`，靠**盯梢超时**兜底（见 HINT_WATCH_MAX_MS）：
+ *    隐私的号会一直 wait 到超时，白打若干次请求，但不会误报「能看」。
+ *    宁可白等，也不能给一个点了开不了的提示。
+ *
+ * @param {object} data `fetchLatest` 的返回（含 isGaming / gaming）
+ * @param {number} afterMin 满几分钟才提示
+ * @returns {{action:'hint'|'wait'|'drop', minutes:number, reason:string}}
+ */
+export function decideHint (data, afterMin = 3) {
+  // ⚠️⚠️ **「明确藏了战绩」和「接口失败」必须分开**（踩过）：
+  //    · `data === FETCH_HIDDEN` → 对方关了战绩隐私，**这一局确定看不了** → 放弃；
+  //    · `data === null` → 接口偶发失败（网络抖动 / 频控换号 / 营地上游超时）→
+  //      **不是「看不了」**，该下轮重试。早先两者都当 drop，结果一次抖动就把这局
+  //      标记成「问过了」，整局再也不问（实测踩过）。
+  if (data === FETCH_HIDDEN) {
+    return { action: 'drop', minutes: -1, reason: '对方关了战绩' }
+  }
+  if (!data) {
+    return { action: 'wait', minutes: -1, reason: '接口失败，下轮重试' }
+  }
+  const gaming = data.gaming
+  if (!gaming || !data.isGaming) {
+    // 没进对局 —— 也可能是有隐私（两者数据同形，见上面的注释），靠超时兜底
+    return { action: 'wait', minutes: -1, reason: '还没进对局' }
+  }
+  if (!isWatchableMode(gaming.gameType)) {
+    return { action: 'drop', minutes: -1, reason: `模式不支持（${gaming.mapName || '未知'}）` }
+  }
+  const minutes = gamingMinutes(gaming)
+  if (minutes < 0) return { action: 'wait', minutes: -1, reason: '开局时刻算不出来' }
+  if (minutes < afterMin) return { action: 'wait', minutes, reason: `才 ${minutes} 分钟` }
+  return { action: 'hint', minutes, reason: '' }
+}
+
 /* ------------------------------------------------------------------ 上下线 */
 
 /** gameOnline 三态的展示名。实测只有这三个值，其它值按「在线」处理 */

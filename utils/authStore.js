@@ -404,6 +404,29 @@ class AuthStore {
   }
 
   /**
+   * 某个机器人用户自己扫码登记的全局账号（可用的那些）。
+   *
+   * 用途：`#营地观战` 要拿「发起人自己的营地好友」，就得知道哪些全局账号是他扫的。
+   * `ownerBotUserId` 从 2026-09-17 起在全局登录时一起写入。
+   *
+   * ⚠️ `includeOrphan`：这之前扫的全局账号 `ownerBotUserId` 是空的（那时全局登录只有主人能发，
+   * 所以那批号一律算主人的）。主人查询时传 true 才不会把老号漏掉。
+   */
+  listGlobalAccountsByOwner(botUserId, { includeOrphan = false } = {}) {
+    const owner = normalizeUserId(botUserId)
+    return this.listAccounts().filter(account => {
+      if (!account.isGlobalDefault || account.authInvalid || !isUsableAuth(account)) {
+        return false
+      }
+      const accountOwner = normalizeUserId(account.ownerBotUserId)
+      if (!accountOwner) {
+        return includeOrphan
+      }
+      return Boolean(owner) && accountOwner === owner
+    })
+  }
+
+  /**
    * 把一个账号登记进全局账号池。
    *
    * 全局账号可以有多个（微信/QQ 扫出来的都行），请求会在它们之间轮换，

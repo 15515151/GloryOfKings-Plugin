@@ -1,9 +1,9 @@
 node_modules/*
 config/config/*
 data/*
-# 老布局残留：服务端曾住在插件 server/ 下，分离到 server 分支后那边的代码会被 git 清掉，
-# 但 .env 和 data/ 是 gitignore 的、会留在用户机器上 —— 继续挡住，别混进提交
-server/data/*
-server/.env
+# 营地观战的服务端：代码住在 watch-server 分支，部署时由 #营地观战部署 拉到这个目录。
+# 整个目录都不提交 —— 免得跟服务端分支两份版本打架，客户端只拉 master 时也不该带上服务端。
+# （共享库早年也住这儿，后来搬到 <云崽根>/data/gok-share-server/，被上面的 data/* 挡着了）
+server/
 *.css.map
 .DS_Store
