@@ -30,9 +30,9 @@ export function supportGuoba () {
     pluginInfo: {
       name: '王者插件',
       title: '王者插件',
-      author: '@Tloml-Starry',
-      authorLink: 'https://gitee.com/Tloml-Starry',
-      link: 'https://gitee.com/Tloml-Starry/GloryOfKings-Plugin',
+      author: '@cchanlan',
+      authorLink: 'https://github.com/cchanlan',
+      link: 'https://github.com/cchanlan/GloryOfKings-Plugin',
       isV3: true,
       isV2: false,
       description: '提供王者荣耀相关功能',
