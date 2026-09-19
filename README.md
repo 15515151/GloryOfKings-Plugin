@@ -33,7 +33,7 @@ git clone --depth=1 https://github.com/cchanlan/GloryOfKings-Plugin.git ./plugin
 ```bash
 cd ./plugins/GloryOfKings-Plugin && pnpm install
 ```
-
+然后重启云崽即可。
 ## 指令
 
 ### 账号管理
@@ -154,6 +154,6 @@ cd ./plugins/GloryOfKings-Plugin && pnpm install
 ## 致谢与协议
 
 - [@Tloml-Starry/GloryOfKings-Plugin](https://gitee.com/Tloml-Starry/GloryOfKings-Plugin) —— 原插件；
-  [@KimigaiiWuyi/WzryUID](https://github.com/KimigaiiWuyi/WzryUID) —— 营地接口调用逻辑参考；数据来自王者营地与王者荣耀官网资料库
+-  [@KimigaiiWuyi/WzryUID](https://github.com/KimigaiiWuyi/WzryUID) —— 营地接口调用逻辑参考；数据来自王者营地与王者荣耀官网资料库
 
   [MIT](LICENSE) © 2026 cchanlan · 本仓库为 Fork，原插件版权归原作者所有，在此一并致谢。觉得有用点个 Star ⭐
