@@ -20,9 +20,17 @@ Yunzai-Bot V3 的王者荣耀插件：战绩查询、赛季表现、皮肤墙、
 
 ```bash
 git clone --depth=1 https://gitcode.com/ccxhan/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
-git clone --depth=1 https://gitee.com/longhengmu/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
-git clone --depth=1 https://github.com/cchanlan/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
+```
 
+```bash
+git clone --depth=1 https://gitee.com/longhengmu/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
+```
+
+```bash
+git clone --depth=1 https://github.com/cchanlan/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
+```
+
+```bash
 cd ./plugins/GloryOfKings-Plugin && pnpm install
 ```
 
