@@ -137,6 +137,9 @@ let lastFriendNullLogAt = 0
 /** 「盯梢等待」日志的上次打印时刻（ms）。同理，盯梢 15 秒一轮，不节流会刷屏 */
 let lastWaitLogAt = 0
 
+/** 「本轮挑到 N 个」日志的上次打印时刻（ms）。同上 */
+let lastTargetsLogAt = 0
+
 /**
  * 盯梢最长盯多久。上线后一直不进对局（在大厅挂着、开着客户端没打）的，
  * 超过这个时长就放弃 —— 否则每条盯梢都会挂到天荒地老、每 15 秒白打一次接口。
@@ -1043,6 +1046,14 @@ export class GameRecordPush extends plugin {
           sub.hintSince = String(now)
         }
         targets.push([qq, sub])
+      }
+
+      // ⭐ 这一轮挑到了谁 —— 盯梢「到底有没有在挑人」的唯一直接证据。
+      // 挑人判据只看本地快照（lastGaming / hintGamingStart），一条日志就能分清
+      // 「没挑到人（快照没更新）」和「挑到了但发不出去（后面几环卡住）」。
+      if (targets.length && now - lastTargetsLogAt > 5 * 60 * 1000) {
+        lastTargetsLogAt = now
+        logger.mark(`[王者推送] 盯梢本轮挑到 ${targets.length} 个：${targets.map(([q]) => q).join('、')}`)
       }
 
       for (const [qq, sub] of targets) {
