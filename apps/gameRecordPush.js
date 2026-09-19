@@ -1089,22 +1089,20 @@ export class GameRecordPush extends plugin {
           continue
         }
 
-        // action === 'hint'：先确认「这个号是某个全局账号的好友」再发 ——
-        // 取流必须过「是不是好友」这关（-1003 是关系判据不是隐私），
-        // 不是好友的话提示了群友也开不了。判定放在这一步（而不是盯梢一开始）
-        // 是为了不白查：只有真的到点了才值得问一次服务端。
+        // 好友判定只拦「**明确不是好友**」这一种 —— 那种情况提示了群友也开不了。
+        //
+        // ⚠️⚠️ 「查不到」（观战服务没起 / 抽风 / 超时）**必须照发**（2026-09-20 改）：
+        //    原先 `null` 也 `continue`，结果服务一挂，盯梢就整天静默空转到 15 分钟超时、
+        //    什么都不发、日志里也一片空白。主人反馈的「周五一整天没提示」就是这个 ——
+        //    当天 20:18 上线时观战服务还没部署（22:24 才创建），闸门从头到尾查不到。
+        //    宁可发一条「可能开不了」的提示，也不能让用户完全不知道他在打。
         const friend = await this.isFriendCampId(sub.campId)
-        // ⚠️ `null` = **查不到**（观战服务没起 / 抽风）—— 不能当成「不是好友」，
-        //    那会把这一局直接标记成处理过、再也不问。保留盯梢，下轮重试。
-        //    日志按 5 分钟节流：服务真挂了这个分支每 15 秒就会走一次，不节流会刷屏
         if (friend === null) {
           if (now - lastFriendNullLogAt > 5 * 60 * 1000) {
             lastFriendNullLogAt = now
-            logger.mark(`[王者推送] 查不到 ${qq} 的好友关系（观战服务没起？），盯梢保留重试`)
+            logger.mark(`[王者推送] 查不到 ${qq} 的好友关系（观战服务没起？），仍照发提示`)
           }
-          continue
-        }
-        if (friend === false) {
+        } else if (friend === false) {
           logger.mark(`[王者推送] ${qq} 的营地 ${sub.campId} 不是任何全局账号的好友，不发提示`)
           mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
           continue
