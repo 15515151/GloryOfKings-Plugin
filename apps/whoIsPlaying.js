@@ -11,21 +11,27 @@
  * （大厅、匹配中、翻战绩都算 2），不等于在对局。图上因此分「正在对局」和
  * 「客户端在线」两组，后者的人没有英雄可显示。
  *
- * 快照有两个来源，**分工不能混**：
- * - 开过战绩推送 / 上下线提醒的人 → 常驻轮询每轮顺手写（apps/gameRecordPush.js）
- * - 只绑了营地号、什么推送都没开的人（影子订阅）→ **不常驻查**，由这条指令
- *   触发时现刷一遍（见下面的 refreshSnapshots）。他们数量最多又常年离线，
- *   常驻查是纯烧配额，实测就是营地 -30107 的主要来源。
+ * 快照有两个来源：
+ * - 开过战绩推送 / 上下线提醒的人 → 常驻轮询每轮顺手写（apps/gameRecordPush.js），
+ *   但那一路有离线退避（判成离线就跳几轮），刚上线的人最坏能滞后十分钟
+ * - 只绑了营地号、什么推送都没开的人（影子订阅）→ **不常驻查**，由这条指令触发时现刷
  *
- * 所以这条指令现在会发请求了（只有现刷那几十秒），刷不到就退回旧快照，
- * 超过 STALE_MS 的那条在文案里标「数据较旧」。
+ * ⚠️ **2026-09-20 起这条指令对名单里的人一律现刷**（原先只刷影子订阅，发起人自己
+ * 另开小灶）。理由是账号池已经到 8 个（`utils/api.js` 按账号分队列并发，实际速率
+ * 约 6~7 个请求/秒），一个群几十个请求几秒就跑完；而「发指令看的却还是十分钟前的
+ * 状态」比多打几个请求难受得多。常驻轮询那边**不变**，退避照旧 —— 省配额靠的是
+ * 「没人看就不查」，不是「有人看也只给旧数据」。
+ *
+ * 刷不到就退回旧快照，超过 STALE_MS 的那条在文案里标「数据较旧」。
+ * ⚠️ 但现刷的结果**只在内存里给本次出图用、不落盘** —— 订阅项里那几个 lastXxx
+ * 同时是推送那条链的状态机，见 refreshSnapshots 的注释。
  *
  * 英雄名走官网 herolist.json（getHeroNameMap，6 小时内存缓存），不碰营地接口。
  *
  * 出图走 WhoIsPlaying.html（视觉与战报同源），渲染失败时回落到纯文字名单。
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
-import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, isPureShadow, collectSnapshot, mergeSubState } from '../utils/pushStore.js'
+import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, collectSnapshot } from '../utils/pushStore.js'
 import { membersOfGroup, isIndexReady, refreshGroupIndex } from '../utils/groupIndex.js'
 import { mapConcurrent } from '../utils/parallel.js'
 import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser, isProfileHidden, getCurrentId, ApiService } from '#utils'
@@ -37,33 +43,40 @@ const STALE_MS = 15 * 60 * 1000
 /**
  * 现刷的门限：快照比这新就直接用，不再重新查。
  *
- * 连点这条指令不会重复打请求，也是现刷唯一能防住"被刷爆"的闸门——
- * 影子订阅已经不在常驻轮询里了，这条指令是它们唯一的请求来源。
- */
-const REFRESH_COOLDOWN_MS = 10 * 60 * 1000
-
-/**
- * **发起人自己**的现刷门限，比上面那个短得多。
+ * 60 秒是**唯一的防刷闸门**（名单里的人现在一律现刷，见文件头），
+ * 作用是挡住「连点这条指令」——同一分钟内连发几次只有第一次真的打请求。
  *
- * 理由：他刚发完指令、看的又是自己，这时候还给他几分钟前的旧快照就是答非所问。
- * 实测（2026-09-20）主人刚上线两分钟、刚开一局，图上却还写着「离线」—— 他那条订阅
- * 是开了战绩推送的正式订阅，不吃现刷，而常驻轮询正处在离线退避里（判定离线 → 跳两轮），
- * 于是快照整整滞后十分钟。
- *
- * 代价只有**一次 profile 请求**（在打的人再加一次战绩列表），60 秒也足够挡住连点。
+ * 原先写的是 10 分钟（那会儿只刷影子订阅、还怕烧配额），现在账号池够宽，
+ * 门限再开那么大就等于「发了指令还是看十分钟前的状态」，白瞎了现刷。
  */
-const SELF_REFRESH_COOLDOWN_MS = 60 * 1000
+const REFRESH_COOLDOWN_MS = 60 * 1000
 
 /**
  * 单次最多现刷几个人。每人一次 profile（在打的人再加一次战绩列表）。
  * 采集是**多路并发**的，路数取决于池里有几个可用账号（见 refreshSnapshots）：
- * 单账号约 1.5 秒/人，上限 24 人就是 30 多秒；4 个号不到 10 秒。
+ * 8 个账号约 6~7 个请求/秒，40 人 6 秒左右就能刷完。
  * 超出的按「快照最旧」优先刷，剩下的用旧数据出图（会带「数据较旧」标记）。
  */
-const MAX_REFRESH = 24
+const MAX_REFRESH = 40
 
 /** 现刷并发锁：一次只允许一条指令在刷，避免几个人同时发把请求量翻倍 */
 let refreshing = false
+
+/**
+ * 「上次现刷时刻」，qq → 毫秒。
+ *
+ * 现刷**不落盘**（理由见 refreshSnapshots），所以 REFRESH_COOLDOWN_MS 这个门限
+ * 没法靠订阅项里的 lastSeenAt 记（那是常驻轮询写的），得自己在内存里记一份。
+ * 进程重启后丢失，等于放行一次全量刷，无所谓。
+ */
+const lastRefreshAt = new Map()
+
+/**
+ * 「上次现刷到的字段」，qq → patch。门限内复用同一份，避免「第二个人发指令反而
+ * 看到更旧的状态」（现刷不落盘，盘上那份只有常驻轮询写过）。
+ * 和 lastRefreshAt 一起清、一起涨，上限见 refreshSnapshots 收尾那几行。
+ */
+const lastRefreshPatch = new Map()
 
 /**
  * 「刚打完」的展示窗口：对局结束后这么久之内还单独列一组。
@@ -136,12 +149,13 @@ export class WhoIsPlaying extends plugin {
       return
     }
 
-    // 现刷快照：影子订阅（这批人不在常驻轮询里，这条指令是他们唯一的请求来源）
-    // 外加**发起人自己**（见 refreshSnapshots 的闸门 ①）
-    await this.refreshSnapshots(e, subs)
+    // 现刷快照：名单里的人一律现刷一遍（含发起人自己），刷不到才退回旧快照。
+    // ⚠️ 刷到的结果**只在内存里给本次出图用，不落盘**（理由见 refreshSnapshots）。
+    const freshPatches = await this.refreshSnapshots(e, subs)
 
-    // 现刷会改订阅项，出图前重读一次，否则用的还是刷新前那份快照
+    // 盘上那份是常驻轮询写的，拿它当底，再把现刷的新鲜字段盖上去
     const fresh = loadPushList()
+    for (const [qq, patch] of freshPatches) fresh[qq] = { ...(fresh[qq] || {}), ...patch }
 
     const heroMap = await getHeroNameMap()
     const now = Date.now()
@@ -202,46 +216,62 @@ export class WhoIsPlaying extends plugin {
   }
 
   /**
-   * 现刷订阅的在线快照。两种人靠它：**没开任何推送的影子订阅**（他们不在常驻轮询里，
-   * 这条指令是唯一的请求来源，理由见文件头「快照有两个来源」），以及**发起人自己**。
+   * 现刷名单里所有人的在线快照 —— **不分影子还是正式订阅**（见文件头的理由）。
    *
-   * 三道闸门，缺一道就能把营地配额打爆：
-   *  ① 只刷纯影子订阅 + 发起人自己：开过上下线提醒 / 战绩推送的人由常驻轮询管，
-   *     那是另一条线，不能因为有人瞄了一眼名单就把他们挨个查一遍。
-   *     ⚠️ 但**发起人自己是例外** —— 他看的就是自己，而正式订阅正处在离线退避里时
-   *     快照能滞后十分钟（实测刚上线却写着「离线」），一次 profile 的代价换「发指令
-   *     就看到现在的状态」，值。
-   *  ② 门限：刚刷过的直接复用，连点不会重复打请求。发起人用短得多的
-   *     SELF_REFRESH_COOLDOWN_MS，否则他一样会被十分钟门限挡住。
-   *  ③ MAX_REFRESH 上限 + 按快照最旧优先：人特别多的群先刷最不准的那批，
-   *     剩下的用旧数据出图（图上会带「数据较旧」标记）
+   * ⚠️⚠️ **刷到的结果不落盘**，只作为返回值交给本次出图。这一条是硬约束，别改回
+   * `mergeSubState`：订阅项里的 `lastOnlineState` / `lastGamingStart` / `lastGameSeq`
+   * **不只是展示字段，还是推送那条链的状态机**——
+   *   · `lastOnlineState`：checkOnline 判「0 ↔ 非0 跨越」的基准、needBattleList 判
+   *     「是不是刚下线那一轮」的依据
+   *   · `lastGamingStart`：开局提醒的去重键（`needGaming` 比的就是它）
+   *   · `lastGameSeq`：战绩推送游标（pickNewBattles 见到相等直接短路）
+   * 现刷只观测、**不播报**，一旦把这些字段写新，下一轮轮询就看不到跨越/新局，
+   * 结果就是**上下线播报、开局提醒、战绩推送一起静默漏掉**。
+   * 常驻轮询那条路没这个问题：它是先 checkBattle / checkOnline 用旧值判完，最后才 merge。
+   *
+   * 两道闸门：
+   *  ① REFRESH_COOLDOWN_MS 门限：刚刷过的直接复用，连点不会重复打请求。
+   *     ⚠️ 门限内的人**也要给出数据** —— 现刷不落盘，盘上那份是常驻轮询写的旧快照，
+   *     只认门限不给缓存的话，同一个群第二个人发指令反而看到更旧的状态。
+   *     所以刷到的结果同时留一份在内存里（`lastRefreshPatch`），门限内直接复用。
+   *  ② MAX_REFRESH 上限 + 按快照最旧优先：人特别多的群先刷最不准的那批，
+   *     剩下的用旧数据出图（图上会带「数据较旧」标记）。⚠️ **发起人必须排进来**：
+   *     排序是「快照最旧优先」，他刚被轮询过（快照不旧）就会被截断挤掉，
+   *     而他看的多半就是自己。
    *
    * 单个号失败（频控、登录态问题、隐藏主页）不中断整轮：留旧快照就好。
-   * 上一条指令还在刷时直接返回，两条指令并发刷会把请求量翻倍。
+   * 上一条指令还在刷时直接返回已缓存的那些，两条指令并发刷会把请求量翻倍。
    *
    * @param {object} e 消息事件，只用来发等待提示、认出发起人
    * @param {Array<[string, object]>} subs 本群名单里的订阅项
+   * @returns {Promise<Map<string, object>>} qq → 本轮观测到的字段（没刷到的为空表）
    */
   async refreshSnapshots (e, subs) {
     const now = Date.now()
     const self = String(e.user_id || '')
+    const out = new Map()
 
-    const due = subs
-      .filter(([qq, sub]) => {
-        // 影子订阅之外，只额外放行发起人自己
-        if (qq !== self && !isPureShadow(sub)) return false
-        const cd = qq === self ? SELF_REFRESH_COOLDOWN_MS : REFRESH_COOLDOWN_MS
-        return now - (Number(sub.lastSeenAt) || 0) > cd
-      })
-      .sort((a, b) => (Number(a[1].lastSeenAt) || 0) - (Number(b[1].lastSeenAt) || 0))
+    const lastAt = (qq, sub) => Math.max(Number(sub.lastSeenAt) || 0, lastRefreshAt.get(qq) || 0)
+
+    // 门限内 + 内存里有上次刷到的结果 → 直接复用；其余排队去刷
+    const due = []
+    for (const [qq, sub] of subs) {
+      if (now - lastAt(qq, sub) <= REFRESH_COOLDOWN_MS) {
+        const hit = lastRefreshPatch.get(qq)
+        if (hit) out.set(qq, hit)
+        continue
+      }
+      due.push([qq, sub])
+    }
+    due.sort((a, b) => lastAt(a[0], a[1]) - lastAt(b[0], b[1]))
 
     // 发起人必须刷到：上面按「快照最旧优先」排完还要按 MAX_REFRESH 截断，
-    // 他自己要是不在最旧那批就会被挤掉 —— 那正是这次要修的场景。
+    // 他自己要是不在最旧那批就会被挤掉 —— 那正是最容易让人以为「这指令坏了」的场景。
     const selfEntry = due.find(([qq]) => qq === self)
     const picked = due.slice(0, MAX_REFRESH)
     if (selfEntry && !picked.includes(selfEntry)) picked[picked.length - 1] = selfEntry
 
-    if (!picked.length || refreshing) return
+    if (!picked.length || refreshing) return out
 
     refreshing = true
     try {
@@ -259,27 +289,35 @@ export class WhoIsPlaying extends plugin {
         shouldQuote()
       )
 
-      // 采集并发、写盘串行：请求会被 api 层轮着分给不同账号（见 utils/parallel.js），
-      // 所以开 N 路协程就能真正并行；而 mergeSubState 是**整表读-改-写**，
-      // 并发调它会互相覆盖（后写的把先写的冲掉），必须等采完再一个一个写。
-      const collected = []
       await mapConcurrent(picked, async ([qq, sub]) => {
         const campId = getCurrentId(qq)
         if (!campId || isProfileHidden(campId)) return
 
         try {
           const { patch } = await collectSnapshot(qq, campId, sub)
-          if (Object.keys(patch).length) collected.push([qq, patch])
+          if (Object.keys(patch).length) out.set(qq, patch)
         } catch (error) {
           // 单个人失败不该毁掉整张图：留旧快照（图上会标「数据较旧」）
           logger.debug(`[王者谁在打游戏] 现刷 ${qq} 失败: ${error.message}`)
         }
       })
 
-      for (const [qq, patch] of collected) mergeSubState(qq, patch)
+      // 留一份在内存里当门限内的复用源，并记下刷过的时刻。
+      // 只记真刷到东西的：失败的下次还得重试。
+      // ⚠️ 上限纯粹是防内存单调增长：绑定营地号的人再多也就几百，正常永远碰不到。
+      if (lastRefreshPatch.size > 500) {
+        lastRefreshPatch.clear()
+        lastRefreshAt.clear()
+      }
+      for (const [qq, patch] of out) {
+        lastRefreshAt.set(qq, Date.now())
+        lastRefreshPatch.set(qq, patch)
+      }
     } finally {
       refreshing = false
     }
+
+    return out
   }
 
   /** 出图。失败返回 null，由调用方回落到文字名单 */
