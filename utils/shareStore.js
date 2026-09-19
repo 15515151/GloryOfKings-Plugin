@@ -143,7 +143,10 @@ export function readShareConfig () {
     return {
       enabled: cfg.shareEnabled === true,
       apiUrl: String(cfg.shareApiUrl || '').trim().replace(/\/+$/, ''),
-      token: String(cfg.shareToken || '').trim(),
+      // ⚠️ 令牌**和观战/消息共用同一个**（`distToken`）—— 主人签发时是「代共享库签」的，
+      //    所以一个值两边都认。锅巴里也只填一处。
+      //    回退读老的 `shareToken`：合并之前配过的机器不用重新填。
+      token: String(cfg.distToken || cfg.shareToken || '').trim(),
       // 远程管理用的钥匙（服务端 GOK_ADMIN_SECRET）。只有运维指令用它，
       // 和接入用的 token 是两码事，缺了只影响发令牌那些，不影响接入
       adminSecret: String(cfg.shareAdminSecret || '').trim()

@@ -247,7 +247,9 @@ export class ShareBind extends plugin {
       return e.reply('令牌看着不对（太短了），从共享库主人那里要一个', shouldQuote())
     }
 
-    Config.modify('config', 'shareToken', token)
+    // ⚠️ 写的是 `distToken` —— 令牌和观战/消息**共用同一个**（主人签发时是代共享库签的），
+    //    锅巴里也只有那一处填写口。老的 `shareToken` 只在读取时作回退。
+    Config.modify('config', 'distToken', token)
     // 回显打码：这条指令可能在群里发，令牌不该贴在群聊记录里
     return e.reply(`已设置令牌：${maskToken(token)}\n接着发 #接入营地共享库 试连一次`, shouldQuote())
   }

@@ -84,52 +84,6 @@ export function supportGuoba () {
           component: 'Switch'
         },
         {
-          field: 'config.shareEnabled',
-          label: '营地ID共享库',
-          bottomHelpMessage:
-            '接入一个自建的「QQ → 营地ID」共享池，让用户在别的机器人上绑过的营地ID 在本机也能直接用，不用重新绑定。' +
-            '共享库由主人统一提供，地址和令牌进群 972915804 找主人要（不再支持自行部署）。' +
-            '默认关闭：不接入时本插件所有功能都不受影响。' +
-            '用户默认**不共享**，要他们自己发 #开启营地ID共享 才会把自己的营地ID传上去。' +
-            '只有当场发的查询指令认共享数据，推送/排行榜/#谁在打游戏 仍只认本机绑定。' +
-            '本机还需要有一个可用的全局账号，共享来的营地ID 才查得动（#营地wx全局登录）。',
-          component: 'Switch'
-        },
-        {
-          field: 'config.shareApiUrl',
-          label: '共享库地址',
-          bottomHelpMessage:
-            '共享库服务端的地址，要带 http:// 或 https://。留空 = 不接入。' +
-            '等价指令：#营地共享库地址 <地址>。',
-          component: 'Input',
-          componentProps: {
-            placeholder: 'https://your-share.example.com'
-          }
-        },
-        {
-          field: 'config.shareToken',
-          label: '共享库令牌',
-          bottomHelpMessage:
-            '共享库主人签发的令牌，一个机器人一个。注意这是凭证，等同密码，' +
-            '别往群里贴、也别把带它的配置截图发出去。等价指令：#营地共享库令牌 <令牌>。',
-          component: 'Input',
-          componentProps: {
-            placeholder: 'gok_1_xxxxxxxx'
-          }
-        },
-        {
-          field: 'config.shareAdminSecret',
-          label: '共享库管理密钥（远程管理）',
-          bottomHelpMessage:
-            '服务端 .env 里的 GOK_ADMIN_SECRET。库跑在别的机器或 Docker 上时，' +
-            '配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库；本机部署用不到（插件自己读 .env）。' +
-            '这个密钥能签发、吊销令牌，权限很大，别往群里贴。',
-          component: 'Input',
-          componentProps: {
-            placeholder: '64 位十六进制（openssl rand -hex 32 生成）'
-          }
-        },
-        {
           field: 'config.battleResultCron',
           label: '推送检查间隔',
           bottomHelpMessage: '战绩推送、开局提醒、上下线提醒共用这一个轮询，这里定的是「最快多久看一次」。每个订阅串行拉接口（间隔 800 毫秒）；真打完一局时会再拉一次详情并渲染图（约 1.3 秒）。玩家离线时实际间隔会按下面的退避倍数自动拉长，不会一直按这个频率打接口。设太短仍会触发营地频控 -30107，不建议低于 2 分钟。',
@@ -210,7 +164,7 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
-          label: '服务端分发'
+          label: '服务端接入'
         },
         {
           field: 'config.distUrl',
@@ -223,11 +177,50 @@ export function supportGuoba () {
         },
         {
           field: 'config.distToken',
-          label: '部署令牌',
-          bottomHelpMessage: '主人签发的部署令牌，观战和营地消息共用这一个。⚠️ 是凭证，别往群里贴。',
+          label: '接入令牌',
+          bottomHelpMessage:
+            '主人签发的令牌，**观战 / 营地消息 / 共享库 三套共用这一个** —— ' +
+            '主人签发时是「代共享库签」的，所以一个值三边都认，不用分别填。' +
+            '⚠️ 是凭证，等同密码，别往群里贴、也别把带它的配置截图发出去。' +
+            '等价指令：#营地共享库令牌 <令牌>。',
           component: 'Input',
           componentProps: {
             placeholder: 'gok_1_xxxxxxxx'
+          }
+        },
+        {
+          field: 'config.shareEnabled',
+          label: '营地ID共享库',
+          bottomHelpMessage:
+            '接入一个「QQ → 营地ID」共享池，让用户在别的机器人上绑过的营地ID 在本机也能直接用，不用重新绑定。' +
+            '共享库由主人统一提供，地址进群 972915804 找主人要（不再支持自行部署）。' +
+            '默认关闭：不接入时本插件所有功能都不受影响。' +
+            '用户默认**不共享**，要他们自己发 #开启营地ID共享 才会把自己的营地ID传上去。' +
+            '只有当场发的查询指令认共享数据，推送/排行榜/#谁在打游戏 仍只认本机绑定。' +
+            '本机还需要有一个可用的全局账号，共享来的营地ID 才查得动（#营地wx全局登录）。',
+          component: 'Switch'
+        },
+        {
+          field: 'config.shareApiUrl',
+          label: '共享库地址',
+          bottomHelpMessage:
+            '共享库服务端的地址，要带 http:// 或 https://。留空 = 不接入。' +
+            '等价指令：#营地共享库地址 <地址>。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'https://your-share.example.com'
+          }
+        },
+        {
+          field: 'config.shareAdminSecret',
+          label: '共享库管理密钥（远程管理）',
+          bottomHelpMessage:
+            '服务端 .env 里的 GOK_ADMIN_SECRET。库跑在别的机器或 Docker 上时，' +
+            '配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库。' +
+            '这个密钥能签发、吊销令牌，权限很大，别往群里贴。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '64 位十六进制（openssl rand -hex 32 生成）'
           }
         },
         {
@@ -255,7 +248,7 @@ export function supportGuoba () {
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端分发」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
@@ -277,7 +270,7 @@ export function supportGuoba () {
         {
           field: 'config.campImApiUrl',
           label: '营地消息服务地址',
-          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端分发」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'
