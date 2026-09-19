@@ -36,7 +36,8 @@ function load () {
   cache = {
     cursor: Number(raw.cursor) || 0,
     refs: (raw.refs && typeof raw.refs === 'object') ? { ...raw.refs } : {},
-    accounts: (raw.accounts && typeof raw.accounts === 'object') ? { ...raw.accounts } : {}
+    accounts: (raw.accounts && typeof raw.accounts === 'object') ? { ...raw.accounts } : {},
+    friendLists: (raw.friendLists && typeof raw.friendLists === 'object') ? { ...raw.friendLists } : {}
   }
   return cache
 }
@@ -127,6 +128,49 @@ export function setLastPush (owner, info) {
 /** 查「某归属人最近收到的那条推送」；没有/过期返回 null */
 export function getLastPush (owner) {
   return getRef(`__last__:${String(owner || '')}`)
+}
+
+// ────────────────────────── 好友列表的编号映射 ──────────────────────────
+
+/**
+ * 「#营地好友」出的那张列表 → 编号到人的映射。
+ *
+ * ⚠️ 为什么要落盘：主人看完列表，可能过几分钟才发 `#营地私聊 3 你好` ——
+ *    中间插件重启过（或者主人在别的群发的）就找不到了。TTL 见 FRIEND_LIST_TTL_MS。
+ *
+ * ⚠️ 按**发起人 + 用哪个营地号**分开存：同一个 QQ 换 `#切换营地` 之后，
+ *    编号指向的人完全不一样，混在一起会发错人。
+ */
+const FRIEND_LIST_TTL_MS = 10 * 60 * 1000
+
+/** 存一份「某人某号最近一次的好友列表」 */
+export function setFriendList (owner, selfUserId, list) {
+  const key = `__friends__:${String(owner || '')}:${String(selfUserId || '')}`
+  if (!owner || !selfUserId) return
+  const c = load()
+  if (!c.friendLists) c.friendLists = {}
+  c.friendLists[key] = { at: Date.now(), selfUserId: String(selfUserId), list }
+  // 顺手清理过期的（别让文件无限涨）
+  const now = Date.now()
+  for (const [k, v] of Object.entries(c.friendLists)) {
+    if (now - (v?.at || 0) > FRIEND_LIST_TTL_MS) delete c.friendLists[k]
+  }
+  save()
+}
+
+/**
+ * 按编号取人。
+ * @returns {{userId:string, roleId:string, nick:string, selfUserId:string}|null}
+ */
+export function getFriendByIndex (owner, selfUserId, idx) {
+  const key = `__friends__:${String(owner || '')}:${String(selfUserId || '')}`
+  const v = load().friendLists?.[key]
+  if (!v) return null
+  if (Date.now() - (v.at || 0) > FRIEND_LIST_TTL_MS) return null
+  const i = Number(idx) - 1
+  if (!Number.isInteger(i) || i < 0 || i >= v.list.length) return null
+  const f = v.list[i]
+  return f ? { ...f, selfUserId: v.selfUserId } : null
 }
 
 /** 丢弃缓存（锅巴页面改完文件后，让插件重读） */

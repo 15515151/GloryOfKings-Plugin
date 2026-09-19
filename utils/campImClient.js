@@ -58,6 +58,14 @@ export async function getMessages (since = 0) {
 }
 
 /**
+ * 拉某个营地号「在游戏里」的好友（只含 `gameOnline === 1` 的）。
+ * @param {string} selfUserId 用哪个营地号去拉
+ */
+export async function getFriends (selfUserId) {
+  return callApi(`/api/friends?selfUserId=${encodeURIComponent(String(selfUserId || ''))}`, { timeout: 30000 })
+}
+
+/**
  * 发一条营地消息。
  * @param {{selfUserId: string, toUserId: string, toRoleId?: string, fromRoleId?: string, message: string}} opts
  */
