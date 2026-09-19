@@ -131,6 +131,12 @@ let quietUntil = 0
  */
 let hintRunning = false
 
+/** 「查不到好友关系」日志的上次打印时刻（ms）。服务真挂了时这个分支每 15 秒走一次，不节流会刷屏 */
+let lastFriendNullLogAt = 0
+
+/** 「盯梢等待」日志的上次打印时刻（ms）。同理，盯梢 15 秒一轮，不节流会刷屏 */
+let lastWaitLogAt = 0
+
 /**
  * 盯梢最长盯多久。上线后一直不进对局（在大厅挂着、开着客户端没打）的，
  * 超过这个时长就放弃 —— 否则每条盯梢都会挂到天荒地老、每 15 秒白打一次接口。
@@ -1026,7 +1032,7 @@ export class GameRecordPush extends plugin {
         if (watching) {
           const since = Number(sub.hintSince) || 0
           if (since > 0 && now - since > HINT_WATCH_MAX_MS) {
-            logger.debug(`[王者推送] ${qq} 盯梢超时（${Math.round(HINT_WATCH_MAX_MS / 60000)} 分钟），放弃`)
+            logger.mark(`[王者推送] ${qq} 盯梢超时（${Math.round(HINT_WATCH_MAX_MS / 60000)} 分钟），放弃`)
             // ⚠️ 必须连 `hintGamingStart` 一起写，否则下一轮又被挑中 → 再盯 15 分钟（死循环）
             mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gamingStart })
             continue
@@ -1050,14 +1056,22 @@ export class GameRecordPush extends plugin {
         }
 
         const { action, minutes, reason } = decideHint(data, afterMin)
-        // `wait` 有两种：真没进对局（继续盯），或**接口失败**（下轮重试）—— 都什么都不动
-        if (action === 'wait') continue
+        // `wait` 有两种：真没进对局（继续盯），或**接口失败**（下轮重试）—— 都什么都不动。
+        // 但这条路径原先一声不吭，盯满 15 分钟超时后用户只看到「没提示」、日志里也查不到原因
+        // （2026-09-20 主人反馈周五一整天没提示，就是靠这条查出来的）。按 3 分钟节流打一条。
+        if (action === 'wait') {
+          if (now - lastWaitLogAt > 3 * 60 * 1000) {
+            lastWaitLogAt = now
+            logger.mark(`[王者推送] ${qq} 盯梢等待：${reason}（isGaming=${data ? Boolean(data.isGaming) : '接口没返回'} gaming=${data?.gaming ? '有' : '无'}）`)
+          }
+          continue
+        }
 
         // 这一局的去重键：优先用**实时值**（比快照准）；隐私号拿不到 gaming，退回快照值
         const gameKey = String(data?.gaming?.dtEventTime || sub.lastGamingStart || '')
 
         if (action === 'drop') {
-          logger.debug(`[王者推送] ${qq} 盯梢放弃：${reason}`)
+          logger.mark(`[王者推送] ${qq} 盯梢放弃：${reason}`)
           // ⚠️ 放弃也要记下这一局，否则下一轮又被挑中白查（同上的死循环）
           mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
           continue
@@ -1082,9 +1096,16 @@ export class GameRecordPush extends plugin {
         const friend = await this.isFriendCampId(sub.campId)
         // ⚠️ `null` = **查不到**（观战服务没起 / 抽风）—— 不能当成「不是好友」，
         //    那会把这一局直接标记成处理过、再也不问。保留盯梢，下轮重试。
-        if (friend === null) continue
+        //    日志按 5 分钟节流：服务真挂了这个分支每 15 秒就会走一次，不节流会刷屏
+        if (friend === null) {
+          if (now - lastFriendNullLogAt > 5 * 60 * 1000) {
+            lastFriendNullLogAt = now
+            logger.mark(`[王者推送] 查不到 ${qq} 的好友关系（观战服务没起？），盯梢保留重试`)
+          }
+          continue
+        }
         if (friend === false) {
-          logger.debug(`[王者推送] ${qq} 的营地 ${sub.campId} 不是任何全局账号的好友，不发提示`)
+          logger.mark(`[王者推送] ${qq} 的营地 ${sub.campId} 不是任何全局账号的好友，不发提示`)
           mergeSubState(qq, { hintWatching: '', hintSince: '', hintGamingStart: gameKey })
           continue
         }
@@ -1379,7 +1400,7 @@ function startHintTicker () {
   //    不依赖实例状态，所以不跑 constructor 完全够用。
   const inst = Object.create(GameRecordPush.prototype)
   setInterval(() => { inst.hintTick() }, ms).unref?.()
-  logger.debug(`[王者推送] 开播盯梢定时器已启动（每 ${Math.round(ms / 1000)} 秒）`)
+  logger.mark(`[王者推送] 开播盯梢定时器已启动（每 ${Math.round(ms / 1000)} 秒）`)
 }
 
 startHintTicker()
