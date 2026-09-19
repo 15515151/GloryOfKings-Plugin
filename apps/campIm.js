@@ -71,6 +71,16 @@ async function pollOnce () {
     const since = store.getCursor()
     const res = await client.getMessages(since)
     if (!res?.ok) return
+
+    // ⚠️⚠️ 服务端重启后消息 id 从 1 重新计数，而游标是「只前进」的 —— 游标停在上次那个大值上，
+    //    之后**一条新消息都拉不到**，表现成「收发全断」（实测 2026-09-20：游标 28、服务端 lastId 12）。
+    //    检测到「服务端最新 id 比游标还小」就复位，下一轮从头补拉（队列里没推过的都会补上）。
+    if (Number(res.lastId) < since) {
+      logger.mark(`[营地消息] 服务端消息序号回退（游标 ${since} → 最新 ${res.lastId}），重置游标后重新拉`)
+      store.resetCursor()
+      return
+    }
+
     const list = res.messages || []
     for (const msg of list) {
       try {

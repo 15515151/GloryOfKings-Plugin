@@ -65,6 +65,22 @@ export function setCursor (id) {
 }
 
 /**
+ * 把游标退回去（**唯一允许回退的入口**）。
+ *
+ * 用途只有一个：服务端重启后消息 id 从 1 重新计数，而游标是「只前进」的，
+ * 于是游标停在上次那个大值上、**一条新消息都拉不到**（实测 2026-09-20：
+ * 游标 28、服务端 lastId 才 12，收发看着全断）。检测到「服务端 lastId 比游标小」
+ * 时调它复位。
+ *
+ * @param {number} [id] 复位到哪，缺省 0（下次从头拉，队列里没推过的会补上）
+ */
+export function resetCursor (id = 0) {
+  const c = load()
+  c.cursor = Number(id) || 0
+  save()
+}
+
+/**
  * 记一条引用映射（推私信时调）。
  * @param {string|number} msgId 发出去的私信消息 id
  * @param {{selfUserId:string,toUserId:string,toRoleId?:string,fromRoleId?:string}} info
