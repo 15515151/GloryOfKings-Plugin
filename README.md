@@ -16,7 +16,7 @@ Yunzai-Bot V3 的王者荣耀插件：战绩查询、赛季表现、皮肤墙、
 
 ## 安装
 
-在**云崽根目录**执行，三个源任选一个（内容完全一样，推荐国内的 gitcode 或 gitee），重启 Bot 即可。先 `#绑定营地 <营地ID>`（营地 App「我的」页可见）才能查自己的数据；查询指令都支持 `@某人`（对方也得绑过）或直接写营地 ID，如 `#查询战绩 @张三`、`#排位表现 1580886057`。
+在**云崽根目录**执行，三个源任选一个（内容完全一样，推荐国内的 gitcode 或 gitee），重启 Bot 即可。
 
 ```bash
 git clone --depth=1 https://gitcode.com/ccxhan/GloryOfKings-Plugin.git ./plugins/GloryOfKings-Plugin/
