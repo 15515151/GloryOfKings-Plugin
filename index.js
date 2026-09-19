@@ -70,6 +70,16 @@ async function scanDirectory(directory) {
 async function loadModules() {
   try {
     const filePaths = await scanDirectory(appsDir)
+
+    // 本地扩展目录：主人专属的指令放这儿（不进公开仓，别人的机器人不会有）。
+    // 没有这个目录是**正常情况**，静默跳过 —— 公开仓里不带它。
+    try {
+      filePaths.push(...await scanDirectory(path.join(__dirname, 'local')))
+      logger.debug(`[${PluginName}] 已加载本地扩展目录 local/`)
+    } catch {
+      // 没有 local/ 就跳过
+    }
+
     logger.debug(`[${PluginName}] 构建模块路径完成，共计 ${filePaths.length} 个模块。`)
 
     logger.debug(`[${PluginName}] 开始并发加载所有模块...`)
