@@ -60,6 +60,14 @@ function mask (id) {
 }
 
 export function init (ctx) {
+  // ⚠️⚠️ `style` 字段**必须写**：锅巴的 `resolveAsset()` 按白名单放行静态资源，
+  //    没在描述符里声明的文件会被 403（页面里自己写 `<link href="page.css">` 也拿不到）。
+  //
+  // ⚠️⚠️ **但这也意味着 CSS 会被注入到【面板主文档】的 `<head>`**（见锅巴前端
+  //    `views/custom/index.vue` 的 `injectAssets()`）—— 是**全局**的，不是 iframe 内。
+  //    所以类名**必须加前缀**，否则会和别的插件的自定义页面互相覆盖
+  //    （实测 `.card` / `.toggle` / `.list` 撞上了 Gscore-Adapter，把人家页面搞花了）。
+  //    本页统一用 `gki-` 前缀（GloryOfKings IM）。
   ctx.registerPage({
     id: 'gok-camp-im',
     title: '营地消息',
