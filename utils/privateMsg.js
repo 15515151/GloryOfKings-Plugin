@@ -15,7 +15,7 @@ import { normalizeId } from './adapter.js'
  * @param {string|number} userId 目标 QQ（官方 bot 下是 openid，那种平台会走 no_api）
  * @param {string} message
  * @param {{bot?: object}} [options] 多账号下传 `e.bot`，默认用全局 Bot
- * @returns {Promise<{ok: boolean, reason?: string}>} reason 只给日志用
+ * @returns {Promise<{ok: boolean, reason?: string, messageId?: string}>} reason 只给日志用
  */
 export async function sendPrivate (userId, message, { bot } = {}) {
   const target = normalizeId(userId)
@@ -35,7 +35,12 @@ export async function sendPrivate (userId, message, { bot } = {}) {
     const result = await friend.sendMsg(message)
     // 有的适配器不抛异常，而是把失败塞在返回值里（ICQQ 失败时给的是 { error }）
     if (result && result.error) return { ok: false, reason: String(result.error) }
-    return { ok: true }
+    // ⭐ 把**发出去那条消息的 id** 带出去：引用回复要靠它精确匹配「引用的是哪一条推送」。
+    //    各适配器字段名不一（NapCat 给 `message_id`、有的给 `messageId` / `seq`），
+    //    挨个试，都拿不到就回空串 —— 调用方会退化成「按最近一条推送」兜底（那会回错人）。
+    const rawId = result?.message_id ?? result?.messageId ?? result?.data?.message_id ?? result?.seq
+    const messageId = (rawId === undefined || rawId === null || rawId === '') ? '' : String(rawId)
+    return { ok: true, messageId }
   } catch (error) {
     // 没加好友、对方关了临时会话都落在这里，报错文本各平台不一样
     logger?.debug?.(`[王者插件] 私聊 ${target} 失败：${error?.message || error}`)

@@ -130,6 +130,11 @@ export async function pushToOwner (msg, { bot } = {}) {
     return { ok: false, reason: sent.reason, to: owner, fallbackToMaster: fallback }
   }
 
+  // ⭐ 精确映射：拿得到「发出去那条消息的 id」时，主人引用**任意一条**推送都能对回正确的人。
+  //    ⚠️ 拿不到就只能靠下面的 __last__ 兜底，而那条路在「连着收到两条推送、引用较旧那条」
+  //    时会回错人（2026-09-20 实测：引用 Cchanlan 的推送，回给了更晚推来的缨）。
+  if (sent.messageId) rememberRef(sent.messageId, msg)
+
   // ⭐ 记下「主人最近收到的这条推送是谁发的」—— 引用回复要靠它反查。
   //    ⚠️ `sendPrivate` 只返回 {ok}，拿不到发出去那条消息的 id（各适配器行为不一），
   //    所以走「最近一条」而不是「精确 id 映射」：主人引用那条私信时，

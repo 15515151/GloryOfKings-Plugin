@@ -247,7 +247,7 @@ export class CampIm extends plugin {
    *
    * @returns {Promise<boolean>} true = 已处理（别再往下走）；false = 放行给别的规则
    */
-  async replyByQuote (e) {
+  async replyByQuote (e, expectCampId = '') {
     const refId = e.reply_id || e.source?.message_id || e.source?.seq
     if (!refId) return false
 
@@ -258,7 +258,17 @@ export class CampIm extends plugin {
     let ref = store.getRef(refId)
     // ② 退路：该归属人最近收到的那条推送（按人分开存，重启也在）
     if (!ref) ref = getLastPush(String(e.user_id || ''))
-    if (!ref) return false       // 找不到对应会话，交给别的规则
+    if (!ref) return false
+
+    // ⚠️⚠️ 退路取到的可能是**另一个营地号**的推送（主人名下两个号都有归属人时尤其容易串），
+    //    也可能是「更晚推来的另一个好友」。被引用原文里写着 `#营地回复 <营地号>`，
+    //    对不上就说明认错了人 —— 宁可什么都不发，也不能把消息发给不相干的好友
+    //    （2026-09-20 实测：引用 Cchanlan 的推送，回给了更晚推来的缨）。
+    if (expectCampId && String(ref.selfUserId) !== String(expectCampId)) {
+      logger.warn(`[营地消息] 引用回复的营地号对不上（推送 ${expectCampId}，取到 ${ref.selfUserId}），不回复`)
+      await e.reply('这条推送太旧，认不出收件人\n引用最新那条，或等 TA 再发一条', shouldQuote())
+      return true
+    }
 
     await this.#doReply(e, ref.selfUserId, text, ref)
     return true
@@ -369,8 +379,12 @@ async function tryQuoteImpl (e) {
   const quoted = await readQuoted(e)
   if (!quoted || !isCampPush(quoted)) return false
 
+  // 推送原文里带着 `#营地回复 <营地号>` —— 拿它校验「退路取到的那条最近推送」
+  // 是不是同一个营地号的，防止两个号互相串（见 replyByQuote 里的注释）
+  const expectCampId = String(quoted).match(/#营地回复\s*(\S+)/)?.[1] || ''
+
   const camp = new CampIm()
-  return camp.replyByQuote(e)
+  return camp.replyByQuote(e, expectCampId)
 }
 
 /**
