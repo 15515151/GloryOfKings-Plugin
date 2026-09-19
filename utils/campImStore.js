@@ -6,9 +6,14 @@
  * cursor: 123                      # 已处理到的最大消息 id（全局单调，防重启丢/重）
  * refs:                            # 引用回复映射：私信消息 id -> 营地会话信息
  *   "123456": { selfUserId, toUserId, toRoleId, fromRoleId, at }
- * accounts:                        # 每个账号的 ws 开关（锅巴页面改这里）
+ * accounts:                        # ⭐ **收消息名单**：只有列在这儿的号才挂 ws 收消息
  *   "1580886057": true
  * ```
+ *
+ * ⚠️⚠️ `accounts` 是一份**独立的白名单**，跟「轮询用的全局账号池」（`AuthPool.json`）
+ *    是两回事 —— 全局账号扫进来是给查询/推送轮询用的，**不代表它要收消息**。
+ *    所以这里**没记录的号 = 不收消息**（早先是「没记录 = 默认开」，那会把一堆只用来
+ *    轮询的号也挂上 ws，账号一多就没法管，2026-09-20 主人指出）。
  *
  * ⚠️ 引用映射要带 TTL —— 不清理的话文件会无限涨。
  */
@@ -108,22 +113,39 @@ export function getRef (msgId) {
   return v
 }
 
-/** 某账号的 ws 开关（默认开） */
+/**
+ * 这个号收不收消息。
+ *
+ * ⚠️ **只有明确加进名单的才算收**（`accounts[userId] === true`）——
+ *    全局账号池里的号默认**不**收消息，它们多半只是拿来轮询查询的。
+ */
 export function isAccountEnabled (userId) {
-  const v = load().accounts[String(userId)]
-  return v !== false          // 没记录过 = 默认开
+  return load().accounts[String(userId)] === true
 }
 
-/** 设置某账号的 ws 开关 */
+/**
+ * 加入 / 移出收消息名单。
+ *
+ * ⚠️ 关掉 = **直接把 key 删掉**（没记录就是不在名单），不留 `false` 残渣 ——
+ *    不然名单里会堆一堆「曾经关过的号」，正是这次要治的「账号多了没法管」。
+ */
 export function setAccountEnabled (userId, enabled) {
   const c = load()
-  c.accounts[String(userId)] = Boolean(enabled)
+  const k = String(userId || '')
+  if (!k) return
+  if (enabled) c.accounts[k] = true
+  else delete c.accounts[k]
   save()
 }
 
-/** 所有账号开关的快照 */
+/** 收消息名单的原始快照（`{userId: true}`） */
 export function getAccountSwitches () {
   return { ...load().accounts }
+}
+
+/** 在不在收消息名单里 */
+export function isInImList (userId) {
+  return Object.prototype.hasOwnProperty.call(load().accounts, String(userId || ''))
 }
 
 /**
@@ -213,6 +235,7 @@ export default {
   isAccountEnabled,
   setAccountEnabled,
   getAccountSwitches,
+  isInImList,
   setLastPush,
   getLastPush,
   setFriendList,

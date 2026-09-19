@@ -19,24 +19,45 @@ import authStore from '../utils/authStore.js'
 import * as store from '../utils/campImStore.js'
 import { ownerOf } from '../utils/campImPush.js'
 
-/** 锅巴面板用的账号快照（含运行时开关 + 归属人） */
+/**
+ * 锅巴面板用的账号快照。
+ *
+ * ⚠️⚠️ 列的**只是「收消息名单」里的号** —— 这份名单跟「轮询用的全局账号池」
+ *    （`AuthPool.json`）是两回事：账号池扫进来是给查询/推送轮询用的，
+ *    **不代表它要挂 ws 收消息**。早先这里是把池子里的号全列出来、默认开，
+ *    账号一多就没法管（2026-09-20 主人指出「谁说扫了全局账号就一定要做收消息」）。
+ *
+ * 没进名单的号放在 `available` 里，页面上用「＋ 添加」挑。
+ */
 function snapshot () {
-  const switches = store.getAccountSwitches()
-  const accounts = authStore.listAccounts()
-    .filter(a => a?.userId && a?.userSig)
-    .map(a => {
-      const userId = String(a.userId)
-      return {
-        userId,
-        nickname: a.nickname || a.userName || '',
-        avatar: a.avatar || a.icon || '',
-        // 归属人：没有就是空串（那批 2026-09-17 之前扫的老号，不推消息）
-        owner: ownerOf(userId),
-        ownerMasked: mask(ownerOf(userId)),
-        // ⚠️ 默认开 —— 没记录过就按开算（和 store.isAccountEnabled 的语义一致）
-        enable: switches[userId] !== false
-      }
-    })
+  const switches = store.getAccountSwitches()          // { userId: true }
+  const all = authStore.listAccounts().filter(a => a?.userId && a?.userSig)
+  const infoOf = new Map(all.map(a => [String(a.userId), a]))
+
+  const build = (userId, enable) => {
+    const a = infoOf.get(String(userId)) || {}
+    return {
+      userId: String(userId),
+      nickname: a.nickname || a.userName || '',
+      avatar: a.avatar || a.icon || '',
+      // 归属人：没有就是空串（那批 2026-09-17 之前扫的老号，不推消息）
+      owner: ownerOf(userId),
+      ownerMasked: mask(ownerOf(userId)),
+      enable
+    }
+  }
+
+  const accounts = Object.keys(switches).map(uid => build(uid, true))
+
+  // 登录过、但还没进收消息名单的号（给「＋ 添加」用）
+  const available = all
+    .filter(a => !switches[String(a.userId)])
+    .map(a => ({
+      userId: String(a.userId),
+      nickname: a.nickname || a.userName || '',
+      owner: ownerOf(a.userId),
+      ownerMasked: mask(ownerOf(a.userId))
+    }))
 
   // 没归属人的排后面，其余按昵称
   accounts.sort((x, y) => {
@@ -46,8 +67,9 @@ function snapshot () {
 
   return {
     accounts,
+    available,
     total: accounts.length,
-    enabled: accounts.filter(a => a.enable).length,
+    enabled: accounts.length,
     ownered: accounts.filter(a => a.owner).length
   }
 }
@@ -87,25 +109,36 @@ export function init (ctx) {
     }
   })
 
-  // 写：保存开关
+  // 写：保存收消息名单
+  //
+  // ⚠️⚠️ **以提交上来的列表为准**（不在列表里的 = 从名单里移出）。
+  //    早先是「只逐个 set」，于是「删掉一行」永远不生效 —— 因为删掉的行根本不在提交里。
+  //    前端是**全量提交**当前名单的，所以这里必须做差集。
   ctx.registerApi('post', '/gok-camp-im/accounts', async (req, res) => {
     try {
-      const list = Array.isArray(req.body?.accounts) ? req.body.accounts : []
-      // ⚠️ 留一行诊断日志：body 没解析出来时这里是 0 项，而接口照样回 ok ——
-      //    表现成「点了保存、刷新又变回去」。有这行就能一眼分清是「没收到」还是「收到了没写进去」。
-      ctx.logger.mark(`[营地消息] 保存开关：收到 ${list.length} 项（其中关 ${list.filter(i => i?.enable !== true).length} 个），body ${req.body ? '已解析' : '为空'}`)
-      for (const item of list) {
-        const userId = String(item?.userId || '').trim()
-        if (!userId) continue
-        store.setAccountEnabled(userId, item.enable === true)
+      // body 没解析出来时**直接报错**，别当成「清空名单」把人家全删了
+      if (!req.body || !Array.isArray(req.body.accounts)) {
+        return res.status(400).json({ ok: false, error: '没收到名单数据' })
       }
+      const wanted = new Set(
+        req.body.accounts
+          .filter(i => i?.enable === true)
+          .map(i => String(i.userId || '').trim())
+          .filter(Boolean)
+      )
+      // 先移出：名单里有、但这次没提交的
+      for (const uid of Object.keys(store.getAccountSwitches())) {
+        if (!wanted.has(uid)) store.setAccountEnabled(uid, false)
+      }
+      // 再加入
+      for (const uid of wanted) store.setAccountEnabled(uid, true)
       // 让插件重读（否则它内存里的缓存还是旧的）
       store.invalidate()
       const after = snapshot()
-      ctx.logger.mark(`[营地消息] 保存后：${after.enabled}/${after.total} 个开着`)
+      ctx.logger.mark(`[营地消息] 收消息名单已更新：${after.total} 个号（${[...wanted].join(',') || '空'}）`)
       res.json({ ok: true, ...after, message: '已保存' })
     } catch (error) {
-      ctx.logger.warn('[营地消息] 保存开关失败', error)
+      ctx.logger.warn('[营地消息] 保存名单失败', error)
       res.status(400).json({ ok: false, error: error.message || '保存失败' })
     }
   })

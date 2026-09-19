@@ -112,6 +112,18 @@ body.gki-theme-cool .gki-page {
   font-size: 12px;
 }
 
+.gki-side { display: flex; align-items: center; gap: 10px; flex: none; }
+
+/* 「可以加进来的号」—— 点一下加入名单 */
+.gki-add-head { margin-top: 26px; }
+.gki-add .gki-card { cursor: pointer; transition: border-color .15s ease; }
+.gki-add .gki-card:hover { border-color: var(--gki-primary); }
+.gki-plus { color: var(--gki-primary); font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+/* 保存状态（自动保存，所以这里只有字，没有按钮） */
+.gki-status { color: var(--gki-muted); font-size: 12px; white-space: nowrap; }
+.gki-status.gki-bad { color: var(--gki-red); font-weight: 700; }
+
 .gki-count {
   display: inline-flex;
   align-items: center;
@@ -134,7 +146,7 @@ body.gki-theme-cool .gki-page {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 20px 24px 96px;
+  padding: 20px 24px 24px;
 }
 
 .gki-inner { width: min(760px, 100%); margin: 0 auto; }
@@ -303,33 +315,7 @@ body.gki-theme-cool .gki-toggle i { background: #d7dde0; }
 .gki-empty b { display: block; margin-bottom: 6px; color: var(--gki-text); font-size: 14px; }
 .gki-empty span { font-size: 12px; }
 
-/* ── 保存条 ───────────────────────────────── */
 
-.gki-dock {
-  position: fixed;
-  right: 24px;
-  bottom: 20px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 8px 8px 8px 15px;
-  border: 1px solid var(--gki-line);
-  border-radius: 9px;
-  background: var(--gki-surface);
-  box-shadow: var(--gki-shadow);
-  color: var(--gki-muted);
-  font-size: 12px;
-  transition: opacity .18s ease, transform .18s ease;
-}
-
-.gki-dock.gki-hidden {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(8px);
-}
-
-.gki-dock .gki-btn {
   height: 34px;
   padding: 0 15px;
   border: 0;
@@ -338,9 +324,6 @@ body.gki-theme-cool .gki-toggle i { background: #d7dde0; }
   cursor: pointer;
 }
 
-.gki-dock .gki-btn.gki-primary { background: var(--gki-primary); color: #fff; }
-.gki-dock .gki-btn.gki-ghost { background: transparent; color: var(--gki-muted); padding: 0 10px; }
-.gki-dock .gki-btn:disabled { opacity: .55; cursor: wait; }
 
 /* ── Toast ────────────────────────────────── */
 
@@ -370,9 +353,8 @@ body.gki-theme-cool .gki-toggle i { background: #d7dde0; }
 @media (max-width: 620px) {
   .gki-topbar { flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 16px; }
   .gki-count { align-self: flex-start; }
-  .gki-content { padding: 16px 12px 96px; }
+  .gki-content { padding: 16px 12px 24px; }
   .gki-card { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 11px; padding: 12px; }
   .gki-av, .gki-av.gki-fallback { width: 38px; height: 38px; }
   .gki-title { font-size: 13px; }
-  .gki-dock { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
-}
+  }

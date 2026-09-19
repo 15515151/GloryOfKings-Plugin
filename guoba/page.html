@@ -21,28 +21,31 @@
     <header class="gki-topbar">
       <div>
         <h1>营地消息</h1>
-        <p>每个营地号的收发只推给它的归属人。关掉的号不会收消息。</p>
+        <p>只有名单里的号会挂长连接收消息，收到的好友消息推给它的归属人。</p>
       </div>
-      <div class="gki-count" id="count">—</div>
+      <div class="gki-side">
+        <span class="gki-status" id="status">已同步</span>
+        <div class="gki-count" id="count">—</div>
+      </div>
     </header>
 
     <main class="gki-content">
       <div class="gki-inner">
         <div class="gki-section-head">
           <h2>账号列表</h2>
-          <p>开关只影响「收消息」，随时可改。</p>
+          <p>这里的号是**专门收消息**的，跟查询/推送轮询用的账号池是两回事 —— 轮询的号不用加进来。</p>
         </div>
         <section class="gki-list" id="list">
           <div class="gki-empty">加载中…</div>
         </section>
+
+        <div class="gki-section-head gki-add-head" id="addHead" hidden>
+          <h2>可以加进来的号</h2>
+          <p>登录过但没在名单里的，点一下就加进来。</p>
+        </div>
+        <section class="gki-list gki-add" id="addList" hidden></section>
       </div>
     </main>
-  </div>
-
-  <div class="gki-dock gki-hidden" id="dock">
-    <span id="dockText">有未保存的改动</span>
-    <button class="gki-btn gki-ghost" type="button" id="btnReset">撤销</button>
-    <button class="gki-btn gki-primary" type="button" id="btnSave">保存</button>
   </div>
 
   <div class="gki-toast" id="toast"></div>
@@ -57,16 +60,16 @@
   var API = apiBase + '/gok-camp-im/accounts'
 
   var accounts = []
+  var available = []
   var saved = '[]'
   var busy = false
 
   var listEl = document.getElementById('list')
-  var dockEl = document.getElementById('dock')
-  var dockText = document.getElementById('dockText')
+  var statusEl = document.getElementById('status')
   var countEl = document.getElementById('count')
+  var addHead = document.getElementById('addHead')
+  var addList = document.getElementById('addList')
   var toastEl = document.getElementById('toast')
-  var btnSave = document.getElementById('btnSave')
-  var btnReset = document.getElementById('btnReset')
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -104,24 +107,22 @@
     toast._t = setTimeout(function () { toastEl.className = 'gki-toast' }, 2600)
   }
 
-  function syncDock() {
-    var on = dirty()
-    dockEl.classList.toggle('gki-hidden', !on)
-    if (on) {
-      var n = accounts.filter(function (a) { return a.enable }).length
-      dockText.textContent = n + ' 个号将接收消息'
-    }
+  // 保存状态写在标题栏右上角（和「N / M 已启用」并排），**不放按钮** ——
+  // 开关是自动存的，锅巴标题栏本来就有「刷新」，页内再放一个纯属多余（主人 2026-09-20 定的）
+  function setStatus(text, bad) {
+    statusEl.textContent = text
+    statusEl.classList.toggle('gki-bad', Boolean(bad))
   }
 
   function render() {
-    var enabled = accounts.filter(function (a) { return a.enable }).length
     var all = accounts.length
-    countEl.textContent = enabled + ' / ' + all + ' 已启用'
-    countEl.classList.toggle('gki-has-off', enabled !== all)
+    countEl.textContent = all + ' 个号收消息'
+    countEl.classList.toggle('gki-has-off', all === 0)
 
     if (!all) {
-      listEl.innerHTML = '<div class="gki-empty"><b>还没有营地账号</b>'
-        + '<span>发 #营地wx全局登录 扫码添加</span></div>'
+      listEl.innerHTML = '<div class="gki-empty"><b>名单是空的，一个号都不收消息</b>'
+        + '<span>从下面「可以加进来的号」里挑，或者发 #营地wx全局登录 扫码添加</span></div>'
+      renderAdd()
       return
     }
 
@@ -153,6 +154,38 @@
         var i = Number(el.dataset.index)
         accounts[i].enable = el.checked
         render()
+        scheduleSave()
+      })
+    })
+
+    renderAdd()
+  }
+
+  // 「可以加进来的号」：登录过、但不在名单里的
+  function renderAdd() {
+    var show = available.length > 0
+    addHead.hidden = !show
+    addList.hidden = !show
+    if (!show) { addList.innerHTML = ''; return }
+    addList.innerHTML = available.map(function (a, i) {
+      var name = a.nickname || ('营地号 ' + a.userId)
+      var tag = a.owner
+        ? '<span class="gki-tag gki-owner">归属 ' + esc(a.ownerMasked) + '</span>'
+        : '<span class="gki-tag gki-orphan">无归属 · 不推</span>'
+      return '<article class="gki-card gki-off gki-addable" data-add="' + i + '">' +
+        '<span class="gki-av gki-fallback">' + esc(name.slice(0, 1)) + '</span>' +
+        '<div class="gki-info"><div class="gki-title"><span class="gki-name">' + esc(name) + '</span>' + tag + '</div>' +
+        '<div class="gki-meta"><span>ID: ' + esc(a.userId) + '</span></div></div>' +
+        '<div class="gki-actions"><span class="gki-plus">＋ 加入</span></div>' +
+        '</article>'
+    }).join('')
+    Array.prototype.forEach.call(addList.querySelectorAll('[data-add]'), function (el) {
+      el.addEventListener('click', function () {
+        var a = available[Number(el.dataset.add)]
+        if (!a) return
+        accounts.push({ userId: a.userId, nickname: a.nickname, avatar: a.avatar || '', owner: a.owner, ownerMasked: a.ownerMasked, enable: true })
+        render()
+        scheduleSave()
       })
     })
   }
@@ -160,45 +193,43 @@
   function load() {
     req('GET').then(function (d) {
       accounts = d.accounts || []
+      available = d.available || []
       saved = snapshot()
       render()
-      syncDock()
+      setStatus('已同步')
     }).catch(function (e) {
       listEl.innerHTML = '<div class="gki-empty"><b>读不到账号列表</b><span>' + esc(e.message) + '</span></div>'
     })
   }
 
-  btnSave.addEventListener('click', function () {
-    if (busy) return
+  // ⭐ 改完自动保存：主人**不用**去找保存按钮（原来那个 dock 只在有改动时才冒出来，
+  //    实际用起来根本看不见 —— 主人反馈「这页面没有保存按钮」，2026-09-20）。
+  //    debounce 一下：连着拨几个开关只发一次请求。
+  var saveTimer = null
+
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(save, 350)
+  }
+
+  function save() {
+    if (busy) { scheduleSave(); return }   // 上一发还没回来，等会儿再存
     busy = true
-    btnSave.disabled = true
+    setStatus('保存中…')
     req('POST', {
       accounts: accounts.map(function (a) {
         return { userId: a.userId, enable: a.enable }
       })
     }).then(function (d) {
       accounts = d.accounts || accounts
+      available = d.available || available
       saved = snapshot()
       render()
-      syncDock()
-      toast(d.message || '已保存')
+      setStatus('已同步')
     }).catch(function (e) {
-      toast('保存失败：' + e.message, true)
-    }).then(function () {
-      busy = false
-      btnSave.disabled = false
-    })
-  })
-
-  btnReset.addEventListener('click', function () {
-    var base = JSON.parse(saved)
-    accounts = base.map(function (s) {
-      var full = accounts.filter(function (a) { return a.userId === s.userId })[0] || {}
-      return Object.assign({}, full, { enable: s.enable })
-    })
-    render()
-    syncDock()
-  })
+      setStatus('保存失败，点上面刷新重试', true)
+    }).then(function () { busy = false })
+  }
 
   load()
 })()

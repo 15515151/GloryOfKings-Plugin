@@ -171,6 +171,12 @@ export class CampIm extends plugin {
       priority: 0,
       rule: [
         { reg: '^#营地消息$', fnc: 'status' },
+        // ⭐ 收消息名单的开关。默认**只有明确加进来的号才收消息**（扫进来的全局账号
+        //    默认只拿来轮询），所以必须有这两条指令，不然用户扫完号不知道怎么开。
+        //    ⚠️ **不带营地号**：谁发谁就是主人 —— 开了就把他**名下所有**全局账号一起开关。
+        //       指定单个号是锅巴页面干的事，指令这层没必要让人记一串数字。
+        { reg: '^#营地消息(开|开启|收|打开)$', fnc: 'openMine' },
+        { reg: '^#营地消息(关|关闭|不收|停止)$', fnc: 'closeMine' },
         { reg: '^#营地回复\\s*(\\S+)\\s+([\\s\\S]+)$', fnc: 'reply' },
         { reg: '^#营地消息(同步|重连)$', fnc: 'resync', permission: 'master' },
         // ⚠️⚠️ 引用回复必须**放在同一个类里**，不能再单开一个 plugin 子类 ——
@@ -214,7 +220,58 @@ export class CampIm extends plugin {
     const pending = Number(res.queue?.lastId || 0) - store.getCursor()
     if (pending > 0) lines.push(`\n有 ${pending} 条消息待处理`)
 
+    // ⭐ 登录了、但不在收消息名单里的号：提醒一句 + 给一条能照着发的指令。
+    //    默认不收是刻意的（扫进来的全局账号大多只拿来轮询查询），但不提醒的话
+    //    用户会以为「扫完就该收消息」，发现收不到也不知道为什么。
+    const idle = authStore.listAccounts()
+      .filter(a => a?.userId && a?.userSig && !store.isInImList(a.userId) && ownerOf(a.userId))
+    if (idle.length) {
+      lines.push('', `你还有 ${idle.length} 个登录过的号没收消息`)
+      lines.push('要收就发 #营地消息开')
+    }
+
     return e.reply(lines, shouldQuote())
+  }
+
+  /** `#营地消息开` —— 把自己名下所有全局账号加进收消息名单 */
+  async openMine (e) {
+    return this.#toggleMine(e, true)
+  }
+
+  /** `#营地消息关` —— 把自己名下所有全局账号移出收消息名单 */
+  async closeMine (e) {
+    return this.#toggleMine(e, false)
+  }
+
+  /**
+   * 收消息名单的开关（**按人**，不按号）。
+   *
+   * ⚠️ 谁能开：**扫码登录过全局账号的人自己** —— 一个 QQ 名下的号全开/全关。
+   *    早先写的是 `#营地消息收 <营地号>`，主人当场否了：「绑了全局账号的都能自主开关，
+   *    你这还加个 QQ 号干嘛」。确实 —— 谁发指令谁就是那个号的主人，不用他记数字。
+   *    要单独挑某一个号，去锅巴侧边栏「营地消息」页面。
+   */
+  async #toggleMine (e, on) {
+    const uid = String(e.user_id || '')
+    // 主人可以用 includeOrphan：2026-09-17 之前扫的号没记 ownerBotUserId，那批算主人的
+    const mine = authStore
+      .listGlobalAccountsByOwner(uid, { includeOrphan: Boolean(e.isMaster) })
+      .map(a => String(a.userId))
+      .filter(Boolean)
+
+    if (!mine.length) {
+      return e.reply('你还没有扫码登录过营地号\n发 #营地wx全局登录 扫码添加', shouldQuote())
+    }
+
+    for (const id of mine) store.setAccountEnabled(id, on)
+    store.invalidate()
+    // 立刻同步给服务端（挂上/停掉长连接），不用等下一轮轮询
+    await syncAccounts()
+
+    return e.reply(
+      on ? `已开始收 ${mine.length} 个号的消息` : `已停止收 ${mine.length} 个号的消息`,
+      shouldQuote()
+    )
   }
 
   /** `#营地回复 <营地号> <内容>` */

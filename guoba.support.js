@@ -5,6 +5,7 @@ import authStore from './utils/authStore.js'
 //    那个上下文里命名空间导入会报 `does not provide an export named 'default'`，整个 support 载入失败
 //    （2026-09-20 实测：锅巴「插件配置」页里那一堆开关全没了）。用具名导入没有这个问题。
 import { getAccountSwitches, setAccountEnabled, invalidate } from './utils/campImStore.js'
+import { ownerOf } from './utils/campImPush.js'
 
 function getAuthPoolSnapshot () {
   const accounts = authStore.getGuobaAccounts().map(account => ({
@@ -32,20 +33,40 @@ function getAuthPoolSnapshot () {
  */
 function getCampImSnapshot () {
   const switches = getAccountSwitches()
-  const accounts = authStore.listAccounts()
-    .filter(a => a?.userId && a?.userSig)
+  const all = authStore.listAccounts().filter(a => a?.userId && a?.userSig)
+  const infoOf = new Map(all.map(a => [String(a.userId), a]))
+
+  // ⚠️⚠️ **只列「收消息名单」里的号**（`campIm.yaml` 的 accounts）——
+  //    这份名单跟查询/推送轮询用的全局账号池是两回事，池子里的号扫进来是为了轮询，
+  //    不代表它要挂 ws 收消息。早先这里把池子里的号全列出来、默认开，
+  //    账号一多就没法管（2026-09-20 主人指出）。
+  //    想加号：去侧边栏「营地消息」页面，那儿有「可以加进来的号」。
+  const accounts = Object.keys(switches).map(uid => {
+    const a = infoOf.get(String(uid)) || {}
+    return {
+      userId: String(uid),
+      nickname: a.nickname || a.userName || '',
+      enable: true
+    }
+  })
+
+  // ⭐ 「＋新增」下拉里能挑的号：登录过、但还没进收消息名单的。
+  //    ⚠️ 不给人手填 —— 谁记得住营地号那一串数字（2026-09-20 主人吐槽）。
+  const available = all
+    .filter(a => !switches[String(a.userId)])
     .map(a => {
-      const userId = String(a.userId)
-      let owner = ''
-      try { owner = String(authStore.getAccount(userId)?.ownerBotUserId || '') } catch {}
+      const uid = String(a.userId)
+      const nick = a.nickname || a.userName || '未命名'
+      const owner = ownerOf(uid)
       return {
-        userId,
-        nickname: a.nickname || a.userName || '',
-        // ⚠️ 默认开 —— 和 campImStore.isAccountEnabled 的语义一致
-        enable: switches[userId] !== false
+        userId: uid,
+        nickname: nick,
+        label: `${nick}（${uid}）${owner ? '' : ' · 无归属不推'}`,
+        value: uid
       }
     })
-  return { accounts, enabledCount: accounts.filter(a => a.enable).length }
+
+  return { accounts, available, enabledCount: accounts.length }
 }
 
 export function supportGuoba () {
@@ -303,11 +324,13 @@ export function supportGuoba () {
         },
         {
           field: 'campIm.accounts',
-          label: `哪些营地号收消息（共 ${campIm.accounts.length} 个，已开 ${campIm.enabledCount} 个）`,
-          helpMessage: '只对「有归属人」的号生效 —— 没有归属人的号一律不推，开了也没用。',
+          label: `哪些营地号收消息（共 ${campIm.accounts.length} 个）`,
+          helpMessage: '只对「有归属人」的号生效 —— 没有归属人的号一律不推，加了也没用。',
           bottomHelpMessage:
-            '勾「收消息」= 给这个号挂长连接、收到好友消息推给它的归属人；不勾 = 完全不碰它。' +
-            '这里和侧边栏「营地消息」页面是同一份开关，改哪个都行，改完几秒内自动生效（不用重启）。' +
+            '⚠️ 这是**收消息专用**的名单，跟查询/推送轮询用的账号池是两回事 —— ' +
+            '扫进来的全局账号默认**不**收消息，只拿来轮询查数据；要收消息的才加到这里。' +
+            '「删除」= 移出名单（立刻停掉它的长连接），删了不会再自动冒出来。' +
+            '想加号去侧边栏「营地消息」页面（那儿列着「可以加进来的号」）。' +
             '归属人是扫码登录时记下的，想换人去「账号列表」改「归属 QQ」。',
           component: 'GSubForm',
           componentProps: {
@@ -316,21 +339,23 @@ export function supportGuoba () {
             schemas: [
               {
                 field: 'userId',
-                label: '营地用户ID',
-                component: 'Input',
+                label: '营地号',
+                component: 'Select',
                 required: true,
-                componentProps: { disabled: true }
-              },
-              {
-                field: 'nickname',
-                label: '昵称',
-                component: 'Input',
-                componentProps: { disabled: true }
+                componentProps: {
+                  // ⚠️ 下拉挑，不给人手填营地号那串数字（主人 2026-09-20 吐槽「谁记得id」）
+                  options: campIm.available,
+                  placeholder: campIm.available.length ? '挑一个登录过的营地号' : '没有可加的号了（都已在名单里）',
+                  filterable: true
+                }
               },
               {
                 field: 'enable',
                 label: '收消息',
-                component: 'Switch'
+                component: 'Switch',
+                // 新增一行时默认就是「收」—— 加进来当然是为了收消息
+                defaultValue: true,
+                componentProps: { defaultValue: true }
               }
             ]
           }
