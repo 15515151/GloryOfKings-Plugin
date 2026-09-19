@@ -109,6 +109,26 @@ export function getAccountSwitches () {
   return { ...load().accounts }
 }
 
+/**
+ * 记「某归属人最近收到的那条营地推送」。
+ *
+ * ⚠️ 为什么要落盘：`sendPrivate` 拿不到发出去那条私信的 id，没法按 reply_id 精确映射，
+ *    只能退化成「该归属人最近一条推送」。这个信息必须扛得住重启 ——
+ *    不然主人引用一条重启前收到的推送回复，就会认不出来。
+ *
+ * key 用 `__last__:<归属人QQ>`，按人分开存（多个归属人不能互相覆盖）。
+ */
+export function setLastPush (owner, info) {
+  const o = String(owner || '')
+  if (!o) return
+  addRef(`__last__:${o}`, info)
+}
+
+/** 查「某归属人最近收到的那条推送」；没有/过期返回 null */
+export function getLastPush (owner) {
+  return getRef(`__last__:${String(owner || '')}`)
+}
+
 /** 丢弃缓存（锅巴页面改完文件后，让插件重读） */
 export function invalidate () {
   cache = null

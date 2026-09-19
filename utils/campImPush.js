@@ -20,7 +20,7 @@
 import { Config } from '#components'
 import authStore from './authStore.js'
 import { sendPrivate } from './privateMsg.js'
-import { addRef } from './campImStore.js'
+import { addRef, setLastPush, getLastPush as storeGetLastPush } from './campImStore.js'
 import { sendMaster } from './masterMsg.js'
 import { qlogoUrl } from './avatar.js'
 
@@ -142,7 +142,7 @@ export async function pushToOwner (msg, { bot } = {}) {
 // ────────────────────────── 引用回复的映射 ──────────────────────────
 
 /**
- * 「主人最近一条推送」的映射（内存 + 落盘）。
+ * 「某归属人最近一条推送」的映射。
  *
  * ⚠️ 为什么不按消息 id 精确映射：`sendPrivate` 拿不到发出消息的 id。
  *    所以这里按**归属人**记「最近一条」，主人引用那条私信回复时，
@@ -151,9 +151,11 @@ export async function pushToOwner (msg, { bot } = {}) {
  * 代价：主人连着收到两条推送、引用**较旧**那条回复时，会回错人。
  * 缓解：`campImStore` 里也按 reply_id 存一份（有些适配器能拿到 id），
  *      两条路都走，优先精确匹配。
+ *
+ * ⚠️ 走 `campImStore` 落盘（按归属人分开存），不只用内存 Map ——
+ *    不然重启后主人引用一条旧推送就认不出来，会被别的插件的
+ *    `^#?回复` 之类规则抢走。
  */
-const lastPushByOwner = new Map()
-
 function rememberLastPush (owner, msg) {
   const info = {
     selfUserId: String(msg.selfUserId),
@@ -162,9 +164,7 @@ function rememberLastPush (owner, msg) {
     fromRoleId: String(msg.raw?.toRoleId || ''),
     at: Date.now()
   }
-  lastPushByOwner.set(String(owner), info)
-  // 顺便按「最近」这个伪 id 落盘一份，重启也能用
-  addRef('__last__', info)
+  setLastPush(owner, info)
 }
 
 /**
@@ -173,11 +173,7 @@ function rememberLastPush (owner, msg) {
  * @returns {object|null}
  */
 export function getLastPush (owner) {
-  const v = lastPushByOwner.get(String(owner))
-  if (!v) return null
-  // 超过 10 分钟就当过期（引用一条很久以前的私信，多半不是想回复）
-  if (Date.now() - (v.at || 0) > 10 * 60 * 1000) return null
-  return v
+  return storeGetLastPush(owner)
 }
 
 /**

@@ -1,6 +1,7 @@
 import lodash from 'lodash'
 import { Config, PluginPath, PluginName } from '#components'
 import authStore from './utils/authStore.js'
+import * as campImStore from './utils/campImStore.js'
 
 function getAuthPoolSnapshot () {
   const accounts = authStore.getGuobaAccounts().map(account => ({
@@ -19,12 +20,38 @@ function getAuthPoolSnapshot () {
   }
 }
 
+/**
+ * 营地消息的账号开关快照（给锅巴配置页的 GSubForm 用）。
+ *
+ * ⚠️ 数据源和侧边栏那个「营地消息」页面**是同一份**（`data/campIm.yaml`）——
+ *    两处改哪个都生效，不会打架。
+ *    这里放一份是为了让主人不用切页面，在「插件配置」里就能顺手开关。
+ */
+function getCampImSnapshot () {
+  const switches = campImStore.getAccountSwitches()
+  const accounts = authStore.listAccounts()
+    .filter(a => a?.userId && a?.userSig)
+    .map(a => {
+      const userId = String(a.userId)
+      let owner = ''
+      try { owner = String(authStore.getAccount(userId)?.ownerBotUserId || '') } catch {}
+      return {
+        userId,
+        nickname: a.nickname || a.userName || '',
+        // ⚠️ 默认开 —— 和 campImStore.isAccountEnabled 的语义一致
+        enable: switches[userId] !== false
+      }
+    })
+  return { accounts, enabledCount: accounts.filter(a => a.enable).length }
+}
+
 export function supportGuoba () {
   const {
     accounts: authPoolAccounts,
     invalidCount,
     usableCount
   } = getAuthPoolSnapshot()
+  const campIm = getCampImSnapshot()
 
   return {
     pluginInfo: {
@@ -237,6 +264,40 @@ export function supportGuoba () {
           label: '推送带对方头像',
           bottomHelpMessage: '开着的话推送会带对方在游戏里的头像。头像加载慢或发图失败时会自动降级成纯文字，不会丢消息。',
           component: 'Switch'
+        },
+        {
+          field: 'campIm.accounts',
+          label: `哪些营地号收消息（共 ${campIm.accounts.length} 个，已开 ${campIm.enabledCount} 个）`,
+          helpMessage: '只对「有归属人」的号生效 —— 没有归属人的号一律不推，开了也没用。',
+          bottomHelpMessage:
+            '勾「收消息」= 给这个号挂长连接、收到好友消息推给它的归属人；不勾 = 完全不碰它。' +
+            '这里和侧边栏「营地消息」页面是同一份开关，改哪个都行，改完几秒内自动生效（不用重启）。' +
+            '归属人是扫码登录时记下的，想换人去「账号列表」改「归属 QQ」。',
+          component: 'GSubForm',
+          componentProps: {
+            multiple: true,
+            modalProps: { title: '营地号' },
+            schemas: [
+              {
+                field: 'userId',
+                label: '营地用户ID',
+                component: 'Input',
+                required: true,
+                componentProps: { disabled: true }
+              },
+              {
+                field: 'nickname',
+                label: '昵称',
+                component: 'Input',
+                componentProps: { disabled: true }
+              },
+              {
+                field: 'enable',
+                label: '收消息',
+                component: 'Switch'
+              }
+            ]
+          }
         },
         {
           field: 'config.watchHintEnabled',
@@ -709,11 +770,13 @@ export function supportGuoba () {
       ],
       getConfigData () {
         const { accounts } = getAuthPoolSnapshot()
+        const campIm = getCampImSnapshot()
 
         return {
           config: Config.getDefOrConfig('config'),
           auth: Config.getDefOrConfig('auth'),
-          authPool: { accounts }
+          authPool: { accounts },
+          campIm: { accounts: campIm.accounts }
         }
       },
       setConfigData (data, { Result }) {
@@ -727,8 +790,18 @@ export function supportGuoba () {
           authStore.replaceAccountsFromGuoba(data['authPool.accounts'] || currentAccounts)
         }
 
+        // 营地消息的账号开关：写进 data/campIm.yaml（和侧边栏那个页面同一份）
+        if (Object.prototype.hasOwnProperty.call(data, 'campIm.accounts')) {
+          for (const item of (data['campIm.accounts'] || [])) {
+            const userId = String(item?.userId || '').trim()
+            if (!userId) continue
+            campImStore.setAccountEnabled(userId, item.enable === true)
+          }
+          campImStore.invalidate()
+        }
+
         for (const key in data) {
-          if (key.startsWith('authPool.')) {
+          if (key.startsWith('authPool.') || key.startsWith('campIm.')) {
             continue
           }
 

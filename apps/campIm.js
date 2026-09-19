@@ -102,7 +102,7 @@ async function dispatch (msg) {
 }
 
 /** 启动轮询（幂等） */
-export function startPolling () {
+function startPolling () {
   if (pollTimer) return
   const tick = async () => {
     if (pollEnabled()) await pollOnce()
@@ -116,7 +116,7 @@ export function startPolling () {
 }
 
 /** 停掉轮询 */
-export function stopPolling () {
+function stopPolling () {
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = null
 }
@@ -129,7 +129,7 @@ export function stopPolling () {
  *   · `#营地消息同步` 手动触发
  *   · 轮询里**每隔一段时间**自动对一次 —— 主人在锅巴页面改完开关不用等重启
  */
-export async function syncAccounts () {
+async function syncAccounts () {
   try {
     const status = await client.getStatus()
     if (!status?.ok) return { ok: false, error: '服务没在跑' }
@@ -162,7 +162,14 @@ export class CampIm extends plugin {
       rule: [
         { reg: '^#营地消息$', fnc: 'status' },
         { reg: '^#营地回复\\s*(\\S+)\\s+([\\s\\S]+)$', fnc: 'reply' },
-        { reg: '^#营地消息(同步|重连)$', fnc: 'resync', permission: 'master' }
+        { reg: '^#营地消息(同步|重连)$', fnc: 'resync', permission: 'master' },
+        // ⚠️⚠️ 引用回复必须**放在同一个类里**，不能再单开一个 plugin 子类 ——
+        //    插件自己的 `index.js:82` 每个文件**只取第一个导出**
+        //    （`moduleExports[Object.keys(moduleExports)[0]]`），第二个类会被静默丢掉，
+        //    规则压根注册不进去（实测：priority 表里只有 CampIm，没有 CampImQuoteReply）。
+        //    这条规则匹配任意非空消息是**有意为之**：引用消息时用户发的是自由文本
+        //    （可能是「好的」这种不带 # 的话）。里面只在命中我们的推送时才接管。
+        { reg: '^[\\s\\S]+$', fnc: 'tryQuote', log: false }
       ]
     })
   }
@@ -210,13 +217,23 @@ export class CampIm extends plugin {
   }
 
   /**
+   * 引用推送直接回复 —— 规则里的 `^[\s\S]+$` 那条走这里。
+   * 判据见模块底部的 `tryQuoteImpl`（写在类外面是为了能单测）。
+   */
+  async tryQuote (e) {
+    return tryQuoteImpl(e)
+  }
+
+  /**
    * 引用那条私信直接回复。
    *
    * ⚠️ 走的是 `e.reply_id` —— 主人**引用机器人发的那条推送**时才有值。
+   *    「这条引用的是不是我们的推送」已经在 `CampImQuoteReply.tryQuote` 里判过了
+   *    （读原文认「📩」抬头），这里只管找目标会话。
    *
    * 两条匹配路：
    *   ① 精确：`campImStore` 里按发出消息的 id 存的映射（适配器能给 id 时才有）
-   *   ② 退路：**该主人最近收到的那条推送**（`sendPrivate` 拿不到 id，只能这样）
+   *   ② 退路：**该归属人最近收到的那条推送**（`sendPrivate` 拿不到 id，只能这样）
    *
    * @returns {Promise<boolean>} true = 已处理（别再往下走）；false = 放行给别的规则
    */
@@ -229,12 +246,9 @@ export class CampIm extends plugin {
 
     // ① 精确匹配
     let ref = store.getRef(refId)
-    // ② 退路：该主人最近收到的那条推送
-    if (!ref) {
-      const owner = String(e.user_id || '')
-      ref = getLastPush(owner)
-    }
-    if (!ref) return false       // 引用的不是我们的推送，交给别的规则
+    // ② 退路：该归属人最近收到的那条推送（按人分开存，重启也在）
+    if (!ref) ref = getLastPush(String(e.user_id || ''))
+    if (!ref) return false       // 找不到对应会话，交给别的规则
 
     await this.#doReply(e, ref.selfUserId, text, ref)
     return true
@@ -310,43 +324,120 @@ export class CampIm extends plugin {
   }
 }
 
-// ────────────────────────── 引用回复的接入 ──────────────────────────
+// ────────────────────────── 引用回复的判据 ──────────────────────────
 
 /**
- * ⚠️ 引用回复要**抢在别的规则之前**判断。
+ * 引用那条推送直接回复（`CampIm` 的一条规则，见上面 rule 里的注释）。
  *
- * 云崽的调度（`lib/plugins/loader.js:277`）：fnc 返回 `false` → `continue` 走下一条规则；
- * 返回别的（包括 undefined）→ 直接 `return` 结束整条消息的处理。
- * 所以这个类**只在命中我们记录的 ref 时**返回 true 接管，否则一律 `return false` 放行。
+ * ⚠️ 云崽的调度（`lib/plugins/loader.js:277`）：fnc 返回 `false` → `continue` 走下一条规则；
+ *    返回别的（包括 undefined）→ 直接 `return` 结束整条消息的处理。
+ *    所以这里**只在命中我们的推送时**接管，否则一律 `return false` 放行给别的插件
+ *    （不然会把椰奶的「回复」、DF 的「联系主人」全吃掉）。
  *
  * ⚠️ 规则用 `^[\s\S]+$`（匹配任意非空消息）是**有意为之**：引用消息时用户发的
  *    内容本身是自由文本（可能是「好的」这种不带 # 的话），没法用更窄的正则去框。
- *    代价是每条消息都会进一次这个函数 —— 但它只做一次 Map 查表（`getRef`），
- *    查不到立刻 return false，开销可以忽略。
+ *    代价是每条消息都会进一次这个函数 —— 但它先做最便宜的 `e.reply_id` 判空，
+ *    没有引用立刻 return false，开销可以忽略。
  */
-export class CampImQuoteReply extends plugin {
-  constructor () {
-    super({
-      name: '王者营地消息引用回复',
-      dsc: '引用营地消息推送直接回复',
-      event: 'message',
-      // 比 CampIm（0）早一点点，但只在命中 ref 时才接管，其余全部放行
-      priority: 1,
-      rule: [
-        { reg: '^[\\s\\S]+$', fnc: 'tryQuote', log: false }
-      ]
-    })
-  }
+async function tryQuoteImpl (e) {
+  const refId = e.reply_id || e.source?.message_id || e.source?.seq
+  if (!refId) return false
 
-  async tryQuote (e) {
-    // 先做最便宜的判断：没有引用就直接放行，连 Map 都不用查
-    const refId = e.reply_id || e.source?.message_id || e.source?.seq
-    if (!refId) return false
-    if (!store.getRef(refId)) return false     // 引用的不是营地推送 → 放行
+  const text = String(e.msg || '').trim()
+  if (!text) return false
 
+  // ① 精确匹配：按被引用消息的 id 查（适配器能给出 id 时才有）
+  if (store.getRef(refId)) {
     const camp = new CampIm()
     return camp.replyByQuote(e)
   }
+
+  // ② 退路：读被引用消息的原文，看是不是我们的推送
+  //    ⚠️ 不能只看「该归属人最近有没有收到推送」—— 那样会把主人引用的
+  //    **任何** 消息都当成营地回复（别的插件的引用消息也被吃掉）。
+  //    所以这里必须真的把被引用的那条读出来，认「📩」这个推送抬头。
+  const quoted = await readQuoted(e)
+  if (!quoted || !isCampPush(quoted)) return false
+
+  const camp = new CampIm()
+  return camp.replyByQuote(e)
+}
+
+/**
+ * 读被引用消息的纯文本。
+ *
+ * 各家适配器给的口子不一样，逐个试：
+ *   · `e.getReply()` —— 云崽 loader 在收到 reply 段时挂的（`loader.js:367`）
+ *   · `bot.getMsg(id)` / `e.group.getMsg(id)` / `e.friend.getMsg(id)`
+ *   · `bot.sendApi('get_msg')` —— Gscore-Adapter 走这条
+ *   · `getChatHistory` —— 部分适配器只给这条
+ *
+ * ⚠️ 全失败要返回 null（不是 ''）—— 调用方靠它区分「读不到」和「读到空的」。
+ */
+async function readQuoted (e) {
+  const refId = e.reply_id
+  if (!refId) return null
+
+  const bot = e.bot || globalThis.Bot
+
+  // ① 云崽自带的（yenai 也走这条，实测能拿到东西）
+  try {
+    if (typeof e.getReply === 'function') {
+      const t = flattenMsg(await e.getReply())
+      if (t) return t
+    }
+  } catch { /* 换下一条路 */ }
+
+  // ② 适配器各自的
+  for (const fn of [
+    () => bot?.getMsg?.(refId),
+    () => e.group?.getMsg?.(refId),
+    () => e.friend?.getMsg?.(refId),
+    () => bot?.sendApi?.('get_msg', { message_id: refId }),
+    () => e.group?.getChatHistory?.(e.source?.seq, 1),
+    () => e.friend?.getChatHistory?.(e.source?.time, 1)
+  ]) {
+    try {
+      let r = await fn()
+      if (Array.isArray(r)) r = r.pop()        // 聊天记录返回的是数组
+      const t = flattenMsg(r)
+      if (t) return t
+    } catch { /* 换下一条路 */ }
+  }
+
+  return null
+}
+
+/** 把各种形状的「消息」对象拍平成纯文本；拍不出东西返回 '' */
+function flattenMsg (r) {
+  if (!r) return ''
+  if (typeof r === 'string') return r
+
+  // OneBot 的 get_msg 返回：{ message: [...], raw_message: '...' }
+  if (typeof r.raw_message === 'string' && r.raw_message) return r.raw_message
+  if (typeof r.message === 'string') return r.message
+
+  const arr = Array.isArray(r.message)
+    ? r.message
+    : Array.isArray(r.msg_elements) ? r.msg_elements : null
+  if (!arr) return ''
+
+  return arr.map(seg => {
+    if (!seg) return ''
+    if (typeof seg === 'string') return seg
+    if (seg.type === 'text') return seg.text ?? seg.data?.text ?? ''
+    return ''
+  }).join('')
+}
+
+/**
+ * 这条被引用的消息是不是「营地推送」。
+ *
+ * 判据用推送文案里的固定抬头 `📩`（见 `campImPush.js` 的 `buildContent`）——
+ * 比查 id 稳（id 拿不到），比查「最近有没有推送」准（不会误吃别的插件的引用）。
+ */
+function isCampPush (text) {
+  return text.includes('📩')
 }
 
 // ────────────────────────── 启动 ──────────────────────────
