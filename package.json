@@ -2,6 +2,7 @@
     "name": "gloryofkings-plugin",
     "version": "1.0.7",
     "author": "@Tloml-Starry",
+    "license": "MIT",
     "type": "module",
     "scripts": {
         "fix": "npx prettier --write **/*.js && npx prettier --write *.js"

@@ -311,3 +311,9 @@ pnpm install
 
 觉得有用点个 Star ⭐
 
+## 开源协议
+
+[MIT](LICENSE) © 2026 cchanlan
+
+本仓库是 [@Tloml-Starry/GloryOfKings-Plugin](https://gitee.com/Tloml-Starry/GloryOfKings-Plugin)
+的 Fork，原插件版权归原作者所有，在此一并致谢。
