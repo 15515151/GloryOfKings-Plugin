@@ -34,6 +34,10 @@ import { archiveBattles } from './battleArchive.js'
 // 让它只依赖 pushStore 这一个数据层，不用再单独引 rankStore
 import { normalizeName } from './rankStore.js'
 export { normalizeName }
+// ⚠️ 必须 **import 一次再 export** —— 只写 `export { x } from './y.js'` 是**转出**，
+//    本文件作用域里没有 `x` 这个绑定，同文件里调用它就是 `ReferenceError: x is not defined`
+//    （2026-09-20 踩过：decideHint 里调 isWatchableMode 直接炸，见文件里那处注释）
+import { isWatchableMode } from './watchMode.js'
 // 段位高低的判据（大段位层级）与「跳变」的判据都在段位趋势那边，同一套口径只留一份实现
 import { rankBand, isRankJump } from './rankTrend.js'
 import { PluginData } from '#components'
@@ -919,7 +923,7 @@ export function formatGamingText (gaming, heroMap = {}, name = '') {
  * 漏改就会「列表说能看、盯梢说不能看」。现在服务端直接 import 同一份，
  * 改一处就够了 —— 别在这儿重新定义。
  */
-export { isWatchableMode } from './watchMode.js'
+export { isWatchableMode }
 
 /**
  * 这一局已经打了多久（分钟）。算不出来返回 -1。
