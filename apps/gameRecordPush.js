@@ -798,6 +798,9 @@ export class GameRecordPush extends plugin {
     // 拉 profile 只是为了填快照，不能顺手把他的上下线播出来（那是另一件事，得用户自己开）
     if (onlineOn) {
       await this.checkOnline(qq, sub, data, state)
+      // 开播提示和上下线播报同源：都用本轮这一份 data，**不额外查询**
+      //（2026-09-20 从独立的 15 秒轮询挪回来，见 checkHint 的注释）
+      if (data) await this.checkHint(qq, sub, data)
     }
 
     // 收尾：按这一轮的活跃度定接下来跳过几轮，顺带把本轮观测写进快照字段
@@ -978,6 +981,53 @@ export class GameRecordPush extends plugin {
       // 下线了就别再盯了
       mergeSubState(qq, { hintWatching: '', hintSince: '' })
     }
+  }
+
+  /**
+   * 开播提示：这一局满 N 分钟且模式能看时，往群里问一句「要不要开一路观战」。
+   *
+   * ⚠️⚠️ **必须用 checkAll 本轮已经拉到的 `data`，不要自己再查一次**（2026-09-20 改回来）：
+   *    这个提示本来就是挂在上下线播报那段里的（主人原话：「以前就在上下线推送的代码里」），
+   *    `6dfbc5b` 把它拆成了独立的 15 秒轮询 `hintTick`，每轮**额外打一次 morebattlelist**。
+   *    拆出去之后它和「战绩推送 / 上下线」不再同源 —— 那条独立查询一旦拿不到数据
+   *    （请求太密 / 账号轮换 / 接口抖动），它就整天发不出来，**而战绩推送照常播报**，
+   *    表现成「只有开播提示没了」（主人反馈的周五整天没提示正是这个形态）。
+   *    挪回来用的是同一份 data：它们能播，这条就能播。
+   *
+   * 去重键 `hintGamingStart` 记「已经问过的那一局」（`gaming.dtEventTime` 一局之内恒定）。
+   */
+  async checkHint (qq, sub, data) {
+    if (readConfig().watchHintEnabled === false) return
+
+    const afterMin = Math.max(1, Number(readConfig().watchHintAfterMin) || 3)
+    const { action, minutes } = decideHint(data, afterMin)
+    // `wait`（还没进对局 / 时长不够 / 接口没给数据）什么都不做，下一轮再判
+    if (action === 'wait') return
+
+    const gameKey = String(data?.gaming?.dtEventTime || '')
+
+    // 放弃（模式不支持 / 对方藏了战绩）：记下这一局，别每轮重判
+    if (action === 'drop') {
+      if (gameKey) mergeSubState(qq, { hintGamingStart: gameKey })
+      return
+    }
+
+    // 这一局已经问过了
+    if (!gameKey || gameKey === String(sub.hintGamingStart || '')) return
+
+    // 好友判定只拦「**明确不是好友**」—— 那种情况提示了群友也开不了。
+    // 查不到（观战服务没起 / 抽风）**照发**：宁可发一条可能开不了的，
+    // 也不能让用户完全不知道有人在打（2026-09-20 改，原先这里卡死了整整两天）。
+    const friend = await this.isFriendCampId(sub.campId)
+    if (friend === false) {
+      logger.mark(`[王者推送] ${qq} 的营地 ${sub.campId} 不是任何全局账号的好友，不发开播提示`)
+      mergeSubState(qq, { hintGamingStart: gameKey })
+      return
+    }
+
+    const ok = await this.sendHint(qq, sub, data.gaming, minutes)
+    // 只有真发出去了才记「这局问过」—— 发送失败留着下轮重试，否则这条提示就永远丢了
+    if (ok) mergeSubState(qq, { hintGamingStart: gameKey })
   }
 
   /**
@@ -1412,4 +1462,8 @@ function startHintTicker () {
   logger.mark(`[王者推送] 开播盯梢定时器已启动（每 ${Math.round(ms / 1000)} 秒）`)
 }
 
-startHintTicker()
+// ⚠️ 独立的 15 秒盯梢轮询**已停用**（2026-09-20）：开播提示挪回 checkAll 的
+//    `checkHint`，和上下线播报共用同一份 data。这里保留函数体是为了留个参照，
+//    不再启动定时器 —— 它每 15 秒额外打一次 morebattlelist，正是「提示整天发不出来
+//    而战绩推送照常」的根源（那条独立查询拿不到数据时，整条链路静默空转到超时）。
+// startHintTicker()
