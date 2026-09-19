@@ -46,24 +46,17 @@ export class AccountManager extends plugin {
           reg: `${AT_HEAD}#删除营地\\s*(.*)$`,
           fnc: 'deleteWzryId'
         },
-        {
-          reg: new RegExp('^#营地wx登录$', 'i'),
-          fnc: 'wechatScanLogin'
-        },
         // 两条全局登录**所有人都能发**：登录态记在扫码人自己名下（ownerBotUserId），
         // #营地观战 就靠它认「谁的营地好友」。谁扫的号只喂谁的观战名单，
         // 不会因为开放就串到别人的好友列表上。
+        // 扫码成功后顺手把这个号绑定给扫码人，省掉再发一条 #绑定营地。
         {
           reg: new RegExp('^#营地wx全局登录$', 'i'),
           fnc: 'wechatGlobalScanLogin'
         },
-        // 四条登录/全局登录一律带 `i`：手机上打「qq」「wx」比大写顺手，
+        // 两条登录一律带 `i`：手机上打「qq」「wx」比大写顺手，
         // 用户不该为了大小写重发一遍。字符串形式的 reg 没法写内联标志，
         // 但 Yunzai 收 RegExp 对象（同文件那几条 ID 指令就是这么写的）
-        {
-          reg: new RegExp('^#营地QQ登录$', 'i'),
-          fnc: 'qqScanLogin'
-        },
         {
           reg: new RegExp('^#营地QQ全局登录$', 'i'),
           fnc: 'qqGlobalScanLogin'
@@ -145,7 +138,7 @@ export class AccountManager extends plugin {
       { cmd: '#营地ID / #王者ID / #我的ID / #我的王者ID', example: '示例: #我的王者ID' },
       { cmd: '#切换营地', example: '示例: #切换营地2' },
       { cmd: '#删除营地', example: '示例: #删除营地2' },
-      { cmd: '#营地wx登录 / #营地QQ登录', example: '示例: #营地wx登录' },
+      { cmd: '#营地wx全局登录 / #营地QQ全局登录', example: '示例: #营地wx全局登录' },
       { cmd: '#王者主页 / #全部王者主页', example: '示例: #王者主页2' },
       { cmd: '#查询战绩 / #查询N战绩', example: '示例: #查询2战绩' },
       { cmd: '#王者帮助', example: '示例: #王者帮助' }
@@ -553,10 +546,7 @@ export class AccountManager extends plugin {
       return true
     }
 
-    const {
-      mode = 'personal',
-      qrPromptLines = []
-    } = options
+    const { qrPromptLines = [] } = options
 
     let session
     try {
@@ -567,7 +557,7 @@ export class AccountManager extends plugin {
       return true
     }
 
-    const taskId = `${botUserId}:${mode}:${Date.now()}`
+    const taskId = `${botUserId}:${Date.now()}`
     const qrReply = await e.reply([
       ...qrPromptLines,
       '\n',
@@ -576,7 +566,6 @@ export class AccountManager extends plugin {
 
     const pendingInfo = {
       taskId,
-      mode,
       qrMessageId: qrReply?.message_id || '',
       scanStatusMessageId: '',
       hasScanned: false,
@@ -590,30 +579,16 @@ export class AccountManager extends plugin {
     }
     pendingWechatLoginMap.set(botUserId, pendingInfo)
 
-    void this.waitForWechatLoginResult(e, botUserId, taskId, session, mode)
+    void this.waitForWechatLoginResult(e, botUserId, taskId, session)
     return true
-  }
-
-  async wechatScanLogin(e) {
-    const botUserId = await this.getReplyUserId(e)
-    if (!botUserId) return
-    return this.startWechatLogin(e, botUserId, {
-      mode: 'personal',
-      qrPromptLines: [
-        `请扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想用 #营地观战 看好友对局，发【#营地wx全局登录】。'
-      ]
-    })
   }
 
   async wechatGlobalScanLogin(e) {
     const botUserId = e.user_id
     return this.startWechatLogin(e, botUserId, {
-      mode: 'global',
       qrPromptLines: [
-        `请扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后发 #营地观战，就能看你营地好友里谁在打。'
+        `请扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
+        '\n登录成功后会自动保存登录态并绑定这个营地号，发 #营地观战 就能看你营地好友里谁在打。'
       ]
     })
   }
@@ -624,10 +599,7 @@ export class AccountManager extends plugin {
       return true
     }
 
-    const {
-      mode = 'personal',
-      qrPromptLines = []
-    } = options
+    const { qrPromptLines = [] } = options
 
     let session
     try {
@@ -638,7 +610,7 @@ export class AccountManager extends plugin {
       return true
     }
 
-    const taskId = `${botUserId}:qq:${mode}:${Date.now()}`
+    const taskId = `${botUserId}:qq:${Date.now()}`
     let qrReply = null
     try {
       qrReply = await e.reply([
@@ -654,7 +626,6 @@ export class AccountManager extends plugin {
 
     const pendingInfo = {
       taskId,
-      mode,
       qrMessageId: qrReply?.message_id || '',
       scanStatusMessageId: '',
       hasScanned: false,
@@ -668,35 +639,21 @@ export class AccountManager extends plugin {
     }
     pendingWechatLoginMap.set(botUserId, pendingInfo)
 
-    void this.waitForQQLoginResult(e, botUserId, taskId, session, mode)
+    void this.waitForQQLoginResult(e, botUserId, taskId, session)
     return true
-  }
-
-  async qqScanLogin(e) {
-    const botUserId = await this.getReplyUserId(e)
-    if (!botUserId) return
-    return this.startQQLogin(e, botUserId, {
-      mode: 'personal',
-      qrPromptLines: [
-        `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后会自动保存登录态，并把返回的营地 userId 绑定为当前默认 ID。',
-        '\n想用 #营地观战 看好友对局，发【#营地QQ全局登录】。'
-      ]
-    })
   }
 
   async qqGlobalScanLogin(e) {
     const botUserId = e.user_id
     return this.startQQLogin(e, botUserId, {
-      mode: 'global',
       qrPromptLines: [
-        `请用手机 QQ 扫描二维码完成营地全局登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
-        '\n登录成功后发 #营地观战，就能看你营地好友里谁在打。'
+        `请用手机 QQ 扫描二维码完成营地登录，二维码 3 分钟内有效，将在 ${LOGIN_QR_RECALL_SECONDS} 秒后自动撤回。`,
+        '\n登录成功后会自动保存登录态并绑定这个营地号，发 #营地观战 就能看你营地好友里谁在打。'
       ]
     })
   }
 
-  async waitForQQLoginResult(e, botUserId, taskId, session, mode = 'personal') {
+  async waitForQQLoginResult(e, botUserId, taskId, session) {
     const pending = this.getPendingWechatLogin(botUserId)
     try {
       const result = await waitForQQLogin(session, {
@@ -710,11 +667,7 @@ export class AccountManager extends plugin {
 
       await this.recallWechatLoginMessages(e, pending)
 
-      if (mode === 'global') {
-        await this.finishGlobalWechatLogin(e, botUserId, result)
-      } else {
-        await this.finishPersonalWechatLogin(e, botUserId, result)
-      }
+      await this.finishGlobalWechatLogin(e, botUserId, result)
     } catch (error) {
       if (this.getPendingWechatLogin(botUserId)?.taskId !== taskId) {
         return
@@ -744,24 +697,6 @@ export class AccountManager extends plugin {
     }
   }
 
-  async finishPersonalWechatLogin(e, botUserId, result) {
-    const account = authStore.upsertAccount({
-      ...result.account,
-      ownerBotUserId: botUserId,
-      resetAuthState: true
-    })
-    authStore.bindCampUserId(botUserId, account.userId)
-
-    logger.debug('[营地登录] 登录态写入完成', {
-      botUserId,
-      campUserId: account.userId,
-      loginPlatform: account.loginPlatform,
-      nickname: account.nickname || account.userName || ''
-    })
-
-    await this.replyBindResultCard(e, botUserId, account.userId)
-  }
-
   async finishGlobalWechatLogin(e, botUserId, result) {
     const account = result.account || {}
     // ⚠️ ownerBotUserId 必须写：#营地观战 靠它认「这个号是谁扫的」，
@@ -770,6 +705,12 @@ export class AccountManager extends plugin {
       ...account,
       ownerBotUserId: botUserId
     })
+    // 扫码即绑定：早先的「个人登录」就是「存登录态 + 顺手绑定」两件事，
+    // 现在只留全局登录一条入口，把绑定并进来，用户不用再发一条 #绑定营地
+    if (savedAccount.userId) {
+      authStore.bindCampUserId(botUserId, savedAccount.userId)
+      this.syncShareAfterBind(botUserId)
+    }
     // 全局账号是可以有多个的（轮询池），所以扫码后要报当前池子大小，
     // 否则主人扫第二个号时会以为把第一个覆盖了。
     const globalCount = authStore.listAccounts().filter(item => item.isGlobalDefault).length
@@ -782,7 +723,7 @@ export class AccountManager extends plugin {
     })
 
     const lines = [
-      '全局登录成功。',
+      '登录成功，已绑定这个营地号。',
       `\n营地ID：${savedAccount.userId || '未获取'}`,
       `\n昵称：${savedAccount.nickname || savedAccount.userName || '未命名'}`,
       '\n发送 #营地观战 看你营地好友里谁在打。',
@@ -795,7 +736,7 @@ export class AccountManager extends plugin {
     await e.reply(lines)
   }
 
-  async waitForWechatLoginResult(e, botUserId, taskId, session, mode = 'personal') {
+  async waitForWechatLoginResult(e, botUserId, taskId, session) {
     const pending = this.getPendingWechatLogin(botUserId)
     try {
       const result = await waitForWechatLogin(session, {
@@ -809,11 +750,7 @@ export class AccountManager extends plugin {
 
       await this.recallWechatLoginMessages(e, pending)
 
-      if (mode === 'global') {
-        await this.finishGlobalWechatLogin(e, botUserId, result)
-      } else {
-        await this.finishPersonalWechatLogin(e, botUserId, result)
-      }
+      await this.finishGlobalWechatLogin(e, botUserId, result)
     } catch (error) {
       if (this.getPendingWechatLogin(botUserId)?.taskId !== taskId) {
         return

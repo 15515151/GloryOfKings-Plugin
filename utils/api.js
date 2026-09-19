@@ -391,9 +391,9 @@ class ApiService {
     if (/全局账号|默认全局账号/i.test(rawMessage)) {
       lines.push('处理建议：可使用【#营地wx全局登录】或【#营地QQ全局登录】重新扫码更新全局账号。')
     } else if (/未找到可用的营地登录态/i.test(rawMessage)) {
-      lines.push('处理建议：可先通过【#营地wx登录】或【#营地QQ登录】补充登录态，或在锅巴账号列表中配置可用账号。')
+      lines.push('处理建议：可先通过【#营地wx全局登录】或【#营地QQ全局登录】补充登录态，或在锅巴账号列表中配置可用账号。')
     } else {
-      lines.push('处理建议：可使用【#营地wx登录】或【#营地QQ登录】重新登录，或在锅巴账号列表中检查相关字段。')
+      lines.push('处理建议：可使用【#营地wx全局登录】或【#营地QQ全局登录】重新登录，或在锅巴账号列表中检查相关字段。')
     }
 
     return lines.join('\n')
