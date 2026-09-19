@@ -88,7 +88,7 @@ export function supportGuoba () {
           label: '营地ID共享库',
           bottomHelpMessage:
             '接入一个自建的「QQ → 营地ID」共享池，让用户在别的机器人上绑过的营地ID 在本机也能直接用，不用重新绑定。' +
-            '共享库要自己搭（代码和部署说明在仓库 server 分支，#营地共享库部署 一键装好），或者用别人搭好的。' +
+            '共享库由主人统一提供，地址和令牌进群 972915804 找主人要（不再支持自行部署）。' +
             '默认关闭：不接入时本插件所有功能都不受影响。' +
             '用户默认**不共享**，要他们自己发 #开启营地ID共享 才会把自己的营地ID传上去。' +
             '只有当场发的查询指令认共享数据，推送/排行榜/#谁在打游戏 仍只认本机绑定。' +
@@ -210,12 +210,52 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
+          label: '服务端分发'
+        },
+        {
+          field: 'config.distUrl',
+          label: '分发服务地址',
+          bottomHelpMessage: '观战和营地消息的服务端代码从主人服务器上的「分发服务」下载（默认端口 6868），不再从 git 仓库拉。装观战/消息时发 #营地观战接入 <地址> <令牌> 会自动写这里。留空 = 还没接入，进群 972915804 找主人要。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'http://你的域名:6868'
+          }
+        },
+        {
+          field: 'config.distToken',
+          label: '部署令牌',
+          bottomHelpMessage: '主人签发的部署令牌，观战和营地消息共用这一个。⚠️ 是凭证，别往群里贴。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'gok_1_xxxxxxxx'
+          }
+        },
+        {
+          field: 'config.distAdminSecret',
+          label: '分发服务管理密钥（主人用）',
+          bottomHelpMessage: '签令牌 / 看接入方 / 吊销要用它。本机部署了分发服务时插件会自动读它的 .env，不用填；分发服务跑在别的机器上时才填。用 #营地分发管理密钥 <密钥> 设置（只收私聊）。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '64 位十六进制'
+          }
+        },
+        {
+          field: 'config.distRepoUrl',
+          label: '分发服务代码仓库',
+          bottomHelpMessage: '部署分发服务时从哪个仓库拉代码（它的 dist 分支）。一般不用改，换成自己的私库时才要。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '留空 = 用默认的私库'
+          }
+        },
+        {
+          component: 'Divider',
           label: '营地观战'
         },
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（服务端代码在 watch-server 分支，部署指令会自动拉下来并用 pm2 托管）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端分发」那一栏）。换成别的端口改这里即可，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
@@ -237,7 +277,7 @@ export function supportGuoba () {
         {
           field: 'config.campImApiUrl',
           label: '营地消息服务地址',
-          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（服务端代码在 im-server 分支，部署指令会自动拉下来并用 pm2 托管）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端分发」那一栏）。换成别的端口改这里即可，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'

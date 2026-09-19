@@ -93,7 +93,7 @@ export class ShareBind extends plugin {
    */
   async resync (e) {
     if (!isShareReady()) {
-      return e.reply('本机器人还没接入营地ID共享库，请主人发 #营地共享库', shouldQuote())
+      return e.reply('本机器人还没接入营地ID共享库。进群 972915804 找主人要地址和令牌', shouldQuote())
     }
 
     const qq = String(e.user_id)
@@ -120,7 +120,7 @@ export class ShareBind extends plugin {
 
   async status (e) {
     if (!isShareReady()) {
-      return e.reply('本机器人还没接入营地ID共享库，请主人发 #营地共享库 看看', shouldQuote())
+      return e.reply('本机器人还没接入营地ID共享库。进群 972915804 找主人要地址和令牌', shouldQuote())
     }
 
     const qq = String(e.user_id)
@@ -134,9 +134,9 @@ export class ShareBind extends plugin {
         ids.length
           ? '发 #开启营地ID共享 后，你在别的机器人上不用重新绑定'
           : '你还没绑定营地ID，先发 #绑定营地 [营地ID]',
-        // 主人也可能是在问「我这台机器上那个共享库服务端怎么样」——那是另一条指令，
+        // 主人也可能是在问「我这台机器接的那个共享库怎么样」——那是另一条指令，
         // 两条只差一个「库」字，不点一句他很容易以为自己发错了
-        e.isMaster ? '（服务端状态发 #营地共享库状态）' : ''
+        e.isMaster ? '（库的接入状态发 #营地共享库）' : ''
       ].filter(Boolean).join('\n'), shouldQuote())
     }
 
@@ -171,21 +171,17 @@ export class ShareBind extends plugin {
 
     lines.push(
       '',
-      '接入某个库（自己搭的或别人的）：',
+      '接入（地址和令牌进群 972915804 找主人要）：',
       '#营地共享库地址 <地址>',
       '#营地共享库令牌 <令牌>',
       '#接入营地共享库 / #关闭营地共享库',
       '',
-      '自己搭一个：',
-      '#营地共享库部署            一键装好（pm2 托管）',
-      '#营地共享库状态            服务端跑没跑、库里多少人',
-      '#营地共享库接入方          看谁在用你的库',
+      '管理（库跑在别的机器/Docker 上时，接入后发一次 #营地共享库管理密钥 <密钥> 就能远程管）：',
       '#营地共享库发令牌 <备注>    给别人的机器人签一个（@一下群友就直接私聊给 TA）',
+      '#营地共享库接入方          看谁在用你的库',
       '#营地共享库吊销 <序号>      踢掉某个接入方',
-      '#营地共享库卸载            停掉服务（密钥和数据保留）',
-      '',
-      '库搭在别的机器/Docker 上？接入之后发 #营地共享库管理密钥 <GOK_ADMIN_SECRET>，',
-      '上面发令牌/接入方/吊销几条照样能用（远程管理）'
+      '#营地共享库同步            把本机开过共享的人一起对上库',
+      '#营地共享库查 <QQ>         问库里有这个 QQ 的记录没'
     )
 
     return e.reply(lines.join('\n'), shouldQuote())
@@ -194,10 +190,10 @@ export class ShareBind extends plugin {
   async masterEnable (e) {
     const cfg = readShareConfig()
     if (!cfg.apiUrl) {
-      return e.reply('先发 #营地共享库地址 <地址> 设置共享库地址', shouldQuote())
+      return e.reply('先发 #营地共享库地址 <地址>（地址进群 972915804 找主人要）', shouldQuote())
     }
     if (!cfg.token) {
-      return e.reply('先发 #营地共享库令牌 <令牌> 设置令牌', shouldQuote())
+      return e.reply('先发 #营地共享库令牌 <令牌>（令牌进群 972915804 找主人要）', shouldQuote())
     }
 
     // 先试连再落盘：配置写错了要当场知道，而不是等用户发指令时才发现

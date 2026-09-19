@@ -87,7 +87,7 @@ export async function enableSharing (userId) {
   if (!qq) return { ok: false, message: '缺少 QQ 号' }
 
   if (!isShareReady()) {
-    return { ok: false, message: '本机器人还没接入营地ID共享库，请主人发 #营地共享库 看看' }
+    return { ok: false, message: '本机器人还没接入营地ID共享库。进群 972915804 找主人要地址和令牌' }
   }
 
   const ids = getBoundIds(qq)
@@ -115,7 +115,7 @@ export async function disableSharing (userId) {
   if (!qq) return { ok: false, message: '缺少 QQ 号' }
 
   if (!isShareReady()) {
-    return { ok: false, message: '本机器人还没接入营地ID共享库，请主人发 #营地共享库 看看' }
+    return { ok: false, message: '本机器人还没接入营地ID共享库。进群 972915804 找主人要地址和令牌' }
   }
 
   const result = await revokeBind(qq)

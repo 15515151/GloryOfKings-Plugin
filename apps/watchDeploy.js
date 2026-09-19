@@ -1,56 +1,60 @@
 /**
- * 营地观战服务端的**一键部署**：#营地观战部署 / #营地观战服务。
+ * 营地观战服务端的**一键部署**：#营地观战接入 / #营地观战部署 / #营地观战服务。
  *
  * ## 服务端代码从哪来
  *
- * **不在 master 上** —— 单独住在仓库的 **`watch-server` 分支**里。部署时把那个分支
- * 浅克隆到 `<插件>/server/`，`.gitignore` 把整个 `server/` 挡住，所以：
+ * **不在仓库里，也不在任何公开平台** —— 从**主人的分发服务**下载（凭 token）。
+ * 分发服务跑在主人自己的服务器上，端口默认 6868，按 `watch-server` 分支的
+ * commit sha 现打包成 tar.gz。下载完解压到 `<插件>/server/`，
+ * `.gitignore` 把整个 `server/` 挡住，所以：
  *   · 客户端的插件更新（拉 master）永远碰不到服务端代码
  *   · 服务端也不用跟着插件的发版节奏走
- *
- * ⚠️ 分支名是 `watch-server`，**不是 `server`** —— 后者是营地ID共享库的地盘（apps/shareDeploy.js）。
- *
- * ## 为什么部署在插件目录里（而不是像共享库那样搬到插件外面）
- *
- * 服务端要 import 插件本体的 `utils/xxtea.js`（签名加解密）和 `utils/watchMode.js`
- * （观战模式判据），还要读 `data/AuthPool.json`、往 `data/watch/` 写录像。
- * 留在 `server/` 下，`HERE/..` 和 `../../utils/` 这些相对路径天然成立 —— **一行路径代码都不用改**。
- * 搬到插件外就得把 xxtea/watchMode 复制一份、还得给账号池和录像加 env 指回来。
  *
  * ## 两条硬规矩（跟 shareDeploy 同源）
  *
  * 1. **只动自己起的那个进程**：cwd 或入口脚本必须落在本插件的 server 目录下。
  *    光比进程名会把别人的同名进程停掉 —— 这条教训是从 meme 的卸载逻辑带过来的。
- * 2. **认不出就不动**：`server/` 存在、没 `.git`、里面又没有 `watch-server.js`
+ * 2. **认不出就不动**：`server/` 存在、里面又没有 `watch-server.js`、也没有安装台账
  *    （认不出是我们的目录）→ 拒绝，让主人自己确认。
+ *
+ * ## 数据为什么不会被更新冲掉
+ *
+ * 观战的数据在 `<插件>/data/watch/`（录像、好友索引）和 `data/AuthPool.json`，
+ * 代码在 `<插件>/server/` —— **两者不重叠**。加上解压时还有一道 exclude，
+ * 怎么更新都碰不到数据。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { PluginPath, PluginName, Config } from '#components'
 import { shouldQuote } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
+import {
+  installPackage, fetchPackageMeta, probeStatus, waitStatus, fmtUptime,
+  normalizeBase, STATE_FILE
+} from '../utils/deploy.js'
 
 /** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）—— 只为把路径显示得短一点 */
 const YunzaiRoot = path.resolve(PluginPath, '../..')
 
-/** 服务端代码拉到这里（在插件目录里，被 .gitignore 挡着，不跟插件本体一起提交） */
+/** 服务端代码解到这里（在插件目录里，被 .gitignore 挡着，不跟插件本体一起提交） */
 const SERVER_DIR = path.join(PluginPath, 'server')
 const ENTRY_FILE = path.join(SERVER_DIR, 'watch-server.js')
-const HAS_CLONE = path.join(SERVER_DIR, '.git')
 
-/** 服务端代码住这个分支。⚠️ 不是 `server`，那是共享库的 */
-const SERVER_BRANCH = 'watch-server'
+/** 分发服务上的包名（对应 `watch-server` 分支） */
+const PKG_NAME = 'watch'
 
 const PROC_NAME = 'gok-watch'
 const DEFAULT_PORT = 8899
 
+/** 引导语：没配分发服务时统一用这句 */
+const GROUP_HINT = '进群 972915804 找主人要部署地址和令牌，然后发 #营地观战接入 <地址> <令牌>'
+
 /**
- * 拉下来之后必须齐活的文件。少一个，服务端要么起不来、要么悄悄退化成简版页
+ * 装完必须齐活的文件。少一个，服务端要么起不来、要么悄悄退化成简版页
  * （没有聊天室那种）。
  *
- * ⚠️ `utils/xxtea.js` 和 `utils/watchMode.js` **也在这张表里，但它们不由分支提供** ——
- * 它们在插件本体（master）上，服务端运行时从 `../../utils/` 读。所以既要校验分支拉对了，
+ * ⚠️ `utils/xxtea.js` 和 `utils/watchMode.js` **也在这张表里，但它们不由代码包提供** ——
+ * 它们在插件本体（master）上，服务端运行时从 `../../utils/` 读。所以既要校验包解对了，
  * 也要校验插件本体的依赖在（用户只装了半个插件、或者更新把文件删了，这里会兜住）。
  */
 const NEEDED = [
@@ -74,97 +78,19 @@ function cfg () {
   }
 }
 
+/** 分发服务的地址 + 令牌（观战和营地消息共用同一套） */
+function distConfig () {
+  const c = cfg()
+  return {
+    url: normalizeBase(c.distUrl),
+    token: String(c.distToken || '').trim()
+  }
+}
+
 /** 服务端在哪个端口：从配置的服务地址里抠，抠不到按默认 */
 function serverPort () {
   const m = String(cfg().watchApiUrl || '').match(/:(\d+)/)
   return m ? Number(m[1]) : DEFAULT_PORT
-}
-
-/**
- * 跑一条 git 命令。和 utils/pm2.js 同样的讲究：参数走数组不拼字符串，
- * 路径带空格、带中文都不用自己加引号。
- */
-function git (args, { cwd = PluginPath, timeout = 180000 } = {}) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout, windowsHide: true })
-  return {
-    ok: !r.error && r.status === 0,
-    out: String(r.stdout || '').trim(),
-    err: String(r.stderr || '').trim() || (r.error ? r.error.message : '')
-  }
-}
-
-/** 这个插件仓库的 origin 地址，拿不到返回 null */
-function originUrl () {
-  const r = git(['remote', 'get-url', 'origin'], { timeout: 20000 })
-  return r.ok ? r.out : null
-}
-
-/** 已有克隆（或刚 init 完）时：拉远端最新，reset --hard 只动被跟踪的文件 */
-function pullIntoExistingClone () {
-  const fetched = git(['fetch', '--depth', '1', 'origin', SERVER_BRANCH], { cwd: SERVER_DIR })
-  if (!fetched.ok) return fetched
-  return git(['reset', '--hard', 'FETCH_HEAD'], { cwd: SERVER_DIR })
-}
-
-/**
- * 把 `watch-server` 分支的代码弄到 SERVER_DIR，三种起点都接得住：
- *  - 已是克隆 → fetch + reset 到远端最新
- *  - 目录不存在 → 浅克隆
- *  - 目录存在但不是克隆（**老布局**：服务端原来跟插件本体放一起）→ git init 接回克隆，
- *    reset --hard 一样只写被跟踪的文件
- * 认不出是我们的目录时**拒绝动**（见文件头第 2 条规矩）。
- */
-function fetchServerCode (url) {
-  if (fs.existsSync(HAS_CLONE)) return pullIntoExistingClone()
-
-  if (!fs.existsSync(SERVER_DIR)) {
-    return git(['clone', '--depth', '1', '--branch', SERVER_BRANCH, url, SERVER_DIR], { timeout: 300000 })
-  }
-
-  if (!fs.existsSync(ENTRY_FILE)) {
-    return {
-      ok: false,
-      err: `${path.relative(YunzaiRoot, SERVER_DIR)} 已经存在，但里面没有 watch-server.js —— ` +
-        '看不出是本插件的目录，不敢动它。确认没用了就手动删掉再部署'
-    }
-  }
-
-  const inited = git(['init'], { cwd: SERVER_DIR })
-  if (!inited.ok) return inited
-  const remote = git(['remote', 'add', 'origin', url], { cwd: SERVER_DIR })
-  // 老克隆里可能已经有 origin（重复 add 会报 already exists）—— 那不算失败
-  if (!remote.ok && !/already exists/i.test(remote.err)) return remote
-  return pullIntoExistingClone()
-}
-
-/** 探一次状态接口。连不上返回 null（不抛） */
-async function probeStatus (port, timeout = 2500) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
-      signal: AbortSignal.timeout(timeout)
-    })
-    return res.ok ? await res.json() : null
-  } catch {
-    return null
-  }
-}
-
-/** 等它起来（pm2 拉起到真正监听之间有几百毫秒的空窗） */
-async function waitStatus (port, timeoutMs = 25000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const s = await probeStatus(port)
-    if (s) return s
-    await new Promise(resolve => setTimeout(resolve, 500))
-  }
-  return null
-}
-
-function fmtUptime (ms) {
-  if (!ms || ms < 0) return '—'
-  const hours = Math.floor(ms / 3600000)
-  const minutes = Math.floor((ms % 3600000) / 60000)
-  return hours ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`
 }
 
 /** 「对外地址没配」是部署后最常见的坑：本机能开、群友点了是空的 */
@@ -184,23 +110,66 @@ export class WatchDeploy extends plugin {
   constructor () {
     super({
       name: '王者营地观战运维',
-      dsc: '部署 / 查看营地观战服务端（watch-server 分支上那套）',
+      dsc: '部署 / 查看营地观战服务端',
       event: 'message',
       // ⚠️ 必须是负的：apps/watchBattle.js 那条宽匹配是 `#(?:营地)?观战\s*(.*)$`，
-      //    `#营地观战部署` 也会被它吃掉、掉进序号解析里报一句「编号不对」。
+      //    `#营地观战接入 …` 也会被它吃掉、掉进序号解析里报一句「编号不对」。
       //    云崽按 priority **从小到大**依次执行 fnc，这里抢在它前面 return true，
       //    它就不会再跑。（watchBattle 那边另有一道放行兜底，防 priority 语义变化。）
       priority: -1,
       rule: [
+        // 一步到位：写配置 + 立刻部署。主人和群友用的是同一条
+        // （群友装了这个插件之后，在他自己那台机器人上就是主人）
+        { reg: '^#营地观战接入\\s+(\\S+)\\s+(\\S+)$', fnc: 'connect', permission: 'master' },
         { reg: '^#营地观战部署$', fnc: 'deploy', permission: 'master' },
         { reg: '^#营地观战服务$', fnc: 'status', permission: 'master' }
       ]
     })
   }
 
+  /* -------------------------------------------------------- 接入 */
+
+  /**
+   * 一步接入：`#营地观战接入 <地址> <令牌>`。
+   *
+   * **先试连再落盘** —— 地址或令牌写错了要当场知道，而不是等发部署指令时才报错
+   * （这条经验是从 shareBind 的 masterEnable 带过来的）。
+   */
+  async connect (e) {
+    const m = /^#营地观战接入\s+(\S+)\s+(\S+)$/.exec(String(e.msg || '').trim())
+    if (!m) return e.reply('格式：#营地观战接入 <地址> <令牌>', shouldQuote())
+
+    const url = normalizeBase(m[1])
+    const token = m[2].trim()
+
+    if (!/^https?:\/\//i.test(url)) {
+      return e.reply('地址要以 http:// 或 https:// 开头', shouldQuote())
+    }
+    if (token.length < 20) {
+      return e.reply('令牌看着不对（太短了）。' + GROUP_HINT, shouldQuote())
+    }
+
+    // 试连：问一次版本。失败就不写配置
+    const probe = await fetchPackageMeta({ name: PKG_NAME, url, token })
+    if (!probe.ok) {
+      return e.reply(
+        `连不上分发服务：${probe.message}\n` +
+        '地址和令牌都没错的话，' + GROUP_HINT,
+        shouldQuote()
+      )
+    }
+
+    Config.modify('config', 'distUrl', url)
+    Config.modify('config', 'distToken', token)
+    logger.mark(`[${PluginName}] 已接入分发服务：${url}`)
+
+    // 落盘成功 → 直接接着部署，群友不用再发一条
+    return this.deploy(e, { adopted: true })
+  }
+
   /* -------------------------------------------------------- 部署 */
 
-  async deploy (e) {
+  async deploy (e, { adopted = false } = {}) {
     if (!pm2Bin()) {
       return e.reply(
         '没找到 pm2，先装一个再部署：npm i -g pm2\n' +
@@ -209,20 +178,14 @@ export class WatchDeploy extends plugin {
       )
     }
 
-    if (!git(['--version'], { timeout: 20000 }).ok) {
+    const { url, token } = distConfig()
+    if (!url || !token) {
       return e.reply(
-        '没找到 git，拉不了服务端代码。装好 git（重开云崽让它认出新的 PATH）再来',
+        adopted
+          ? '配置没写进去，重发一次试试'
+          : `还没接入分发服务。${GROUP_HINT}`,
         shouldQuote()
       )
-    }
-
-    const url = originUrl()
-    if (!url) {
-      return e.reply([
-        '这个插件仓库没配 origin 远端，不知道去哪拉服务端代码。',
-        `手动克隆到 ${path.relative(YunzaiRoot, SERVER_DIR)} 之后，再发一次部署就能接着走：`,
-        `  git clone --depth 1 -b ${SERVER_BRANCH} <仓库地址> ${SERVER_DIR}`
-      ].join('\n'), shouldQuote())
     }
 
     // 同名进程但不是我们起的 —— 别去碰它，只说清楚（见文件头第 1 条规矩）
@@ -234,35 +197,51 @@ export class WatchDeploy extends plugin {
       ].join('\n'), shouldQuote())
     }
 
+    // 认不出是我们的目录 → 拒绝动它（见文件头第 2 条规矩）
+    const hasState = fs.existsSync(path.join(SERVER_DIR, STATE_FILE))
+    if (fs.existsSync(SERVER_DIR) && !fs.existsSync(ENTRY_FILE) && !hasState) {
+      return e.reply([
+        `${path.relative(YunzaiRoot, SERVER_DIR)} 已经存在，但里面没有 watch-server.js —— `,
+        '看不出是本插件的目录，不敢动它。确认没用了就手动删掉再部署'
+      ].join(''), shouldQuote())
+    }
+
     const restarting = Boolean(running)
     await e.reply(
       restarting
-        ? '正在重启观战服务…'
-        : '正在部署观战服务（要从 git 拉一下服务端代码），几十秒就好…',
+        ? '正在更新观战服务…'
+        : '正在部署观战服务（要从分发服务下载代码），几十秒就好…',
       shouldQuote()
     )
 
     try {
-      // 服务端代码在 watch-server 分支，插件目录不自带 —— 先把代码弄过来
-      let codeFromLocal = false
-      const fetched = fetchServerCode(url)
-      if (!fetched.ok) {
-        // 拉取失败但本地已经有代码 → 用本地的继续（离线、分支还没推上去、远端抽风都能用）
-        if (!fs.existsSync(ENTRY_FILE)) {
-          throw new Error(
-            `拉取 ${SERVER_BRANCH} 分支失败：${fetched.err || '未知原因'}\n` +
-            `· 确认这个分支已经推到远端（部署要从 origin 拉）\n` +
-            '· 看看这台服务器能不能访问远端'
-          )
+      // 老布局遗留：以前是 git 浅克隆，现在不用 git 了，把 .git 清掉免得困惑
+      const oldGit = path.join(SERVER_DIR, '.git')
+      if (fs.existsSync(oldGit)) {
+        try {
+          fs.rmSync(oldGit, { recursive: true, force: true })
+          logger.mark(`[${PluginName}] 清掉旧的 .git（服务端代码现在从分发服务下载）`)
+        } catch (error) {
+          logger.warn(`[${PluginName}] 清旧 .git 失败（不影响部署）：${error?.message || error}`)
         }
-        codeFromLocal = true
-        logger.warn(`[${PluginName}] ${SERVER_BRANCH} 分支拉取失败，用本地已有的代码继续：${fetched.err}`)
       }
 
-      // 拉完（或用了本地的）再校验一遍：文件不齐就别硬起，免得半死不活
+      const installed = await installPackage({
+        name: PKG_NAME,
+        url,
+        token,
+        destDir: SERVER_DIR,
+        entry: 'watch-server.js',
+        logger
+      })
+      if (!installed.ok) {
+        throw new Error(`${installed.message}\n如果地址令牌没问题，${GROUP_HINT}`)
+      }
+
+      // 解完再校验一遍：文件不齐就别硬起，免得半死不活
       const missing = NEEDED.filter(f => !fs.existsSync(path.join(PluginPath, f)))
       if (missing.length) {
-        throw new Error(`服务端文件不齐，缺：${missing.join('、')}。请主人检查 ${SERVER_BRANCH} 分支上的文件是否完整`)
+        throw new Error(`服务端文件不齐，缺：${missing.join('、')}`)
       }
 
       // 已经在跑 = 大概率是更新完代码要重启才生效，所以这里是 restart 而不是拒绝
@@ -293,22 +272,25 @@ export class WatchDeploy extends plugin {
       }
 
       resetPm2Cache()
-      logger.mark(`[${PluginName}] 观战服务已${restarting ? '重启' : '部署'}：127.0.0.1:${port}（${SERVER_DIR}）`)
+      logger.mark(
+        `[${PluginName}] 观战服务已${restarting ? '重启' : '部署'}：127.0.0.1:${port}` +
+        `（${SERVER_DIR}，版本 ${String(installed.sha).slice(0, 8)}${installed.updated ? '' : '，已是最新'}）`
+      )
 
       const lines = [
-        `✅ 观战服务${restarting ? '已重启' : '部署好了'}`,
+        `✅ 观战服务${restarting ? '已更新' : '部署好了'}`,
         '',
         `进程：${PROC_NAME}（pm2 托管，开机自启）`,
         `端口：${port}`,
         `账号：${status.accounts ?? 0} 个，还能开 ${status.free ?? 0} 路`
       ]
 
-      if (!status.ffmpeg) {
-        lines.push('', '⚠️ 这台机器上没找到 ffmpeg，取流会失败。装好之后发一次 #营地观战部署')
+      if (!installed.updated && restarting) {
+        lines.push('', '代码本来就是最新的，只重启了一遍。')
       }
 
-      if (codeFromLocal) {
-        lines.push('', `⚠️ 远端没连上（或者 ${SERVER_BRANCH} 分支还没推上去），用的是本地已有的服务端代码。`)
+      if (!status.ffmpeg) {
+        lines.push('', '⚠️ 这台机器上没找到 ffmpeg，取流会失败。装好之后发一次 #营地观战部署')
       }
 
       lines.push(...publicUrlHintLines())
@@ -329,7 +311,7 @@ export class WatchDeploy extends plugin {
     const lines = ['🛰 营地观战服务']
 
     if (!proc) {
-      lines.push('进程：没在跑', '', '发 #营地观战部署 装一个')
+      lines.push('进程：没在跑', '', `发 #营地观战部署 装一个（${GROUP_HINT}）`)
       return e.reply(lines.join('\n'), shouldQuote())
     }
 

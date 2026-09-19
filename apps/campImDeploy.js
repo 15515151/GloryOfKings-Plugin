@@ -27,29 +27,34 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { PluginPath, PluginName, Config } from '#components'
 import { shouldQuote } from '#utils'
 import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
+import {
+  installPackage, fetchPackageMeta, probeStatus, waitStatus, fmtUptime,
+  normalizeBase, STATE_FILE
+} from '../utils/deploy.js'
 
 /** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）—— 只为把路径显示得短一点 */
 const YunzaiRoot = path.resolve(PluginPath, '../..')
 
-/** 服务端代码拉到这里（在插件目录里，被 .gitignore 挡着，不跟插件本体一起提交） */
+/** 服务端代码解到这里（在插件目录里，被 .gitignore 挡着，不跟插件本体一起提交） */
 const SERVER_DIR = path.join(PluginPath, 'server-im')
 const ENTRY_FILE = path.join(SERVER_DIR, 'camp-im-server.js')
-const HAS_CLONE = path.join(SERVER_DIR, '.git')
 
-/** 服务端代码住这个分支。⚠️ 不是 `server`（共享库）也不是 `watch-server`（观战） */
-const SERVER_BRANCH = 'im-server'
+/** 分发服务上的包名（对应 `im-server` 分支） */
+const PKG_NAME = 'im'
 
 const PROC_NAME = 'gok-im'
 const DEFAULT_PORT = 8900
 
+/** 引导语：没配分发服务时统一用这句 */
+const GROUP_HINT = '进群 972915804 找主人要部署地址和令牌，然后发 #营地消息接入 <地址> <令牌>'
+
 /**
- * 拉下来之后必须齐活的文件。少一个服务端起不来。
+ * 解下来之后必须齐活的文件。少一个服务端起不来。
  *
- * ⚠️ `lib/xxtea.js` 由**分支**提供（服务端自带一份零依赖的），
+ * ⚠️ `lib/xxtea.js` 由**代码包**提供（服务端自带一份零依赖的），
  *    和观战那边从插件本体读 `utils/xxtea.js` 的做法不同 ——
  *    因为 IM 服务端完全不需要云崽运行时。
  */
@@ -68,95 +73,19 @@ function cfg () {
   }
 }
 
+/** 分发服务的地址 + 令牌（观战和营地消息共用同一套） */
+function distConfig () {
+  const c = cfg()
+  return {
+    url: normalizeBase(c.distUrl),
+    token: String(c.distToken || '').trim()
+  }
+}
+
 /** 服务端在哪个端口：从配置的服务地址里抠，抠不到按默认 */
 function serverPort () {
   const m = String(cfg().campImApiUrl || '').match(/:(\d+)/)
   return m ? Number(m[1]) : DEFAULT_PORT
-}
-
-/**
- * 跑一条 git 命令。和 utils/pm2.js 同样的讲究：参数走数组不拼字符串，
- * 路径带空格、带中文都不用自己加引号。
- */
-function git (args, { cwd = PluginPath, timeout = 180000 } = {}) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout, windowsHide: true })
-  return {
-    ok: !r.error && r.status === 0,
-    out: String(r.stdout || '').trim(),
-    err: String(r.stderr || '').trim() || (r.error ? r.error.message : '')
-  }
-}
-
-/** 这个插件仓库的 origin 地址，拿不到返回 null */
-function originUrl () {
-  const r = git(['remote', 'get-url', 'origin'], { timeout: 20000 })
-  return r.ok ? r.out : null
-}
-
-/** 已有克隆（或刚 init 完）时：拉远端最新，reset --hard 只动被跟踪的文件 */
-function pullIntoExistingClone () {
-  const fetched = git(['fetch', '--depth', '1', 'origin', SERVER_BRANCH], { cwd: SERVER_DIR })
-  if (!fetched.ok) return fetched
-  return git(['reset', '--hard', 'FETCH_HEAD'], { cwd: SERVER_DIR })
-}
-
-/**
- * 把 `im-server` 分支的代码弄到 SERVER_DIR，三种起点都接得住：
- *  - 已是克隆 → fetch + reset 到远端最新
- *  - 目录不存在 → 浅克隆
- *  - 目录存在但不是克隆 → git init 接回克隆
- * 认不出是我们的目录时**拒绝动**（见文件头第 2 条规矩）。
- */
-function fetchServerCode (url) {
-  if (fs.existsSync(HAS_CLONE)) return pullIntoExistingClone()
-
-  if (!fs.existsSync(SERVER_DIR)) {
-    return git(['clone', '--depth', '1', '--branch', SERVER_BRANCH, url, SERVER_DIR], { timeout: 300000 })
-  }
-
-  if (!fs.existsSync(ENTRY_FILE)) {
-    return {
-      ok: false,
-      err: `${path.relative(YunzaiRoot, SERVER_DIR)} 已经存在，但里面没有 camp-im-server.js —— ` +
-        '看不出是本插件的目录，不敢动它。确认没用了就手动删掉再部署'
-    }
-  }
-
-  const inited = git(['init'], { cwd: SERVER_DIR })
-  if (!inited.ok) return inited
-  const remote = git(['remote', 'add', 'origin', url], { cwd: SERVER_DIR })
-  if (!remote.ok && !/already exists/i.test(remote.err)) return remote
-  return pullIntoExistingClone()
-}
-
-/** 探一次状态接口。连不上返回 null（不抛） */
-async function probeStatus (port, timeout = 2500) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
-      signal: AbortSignal.timeout(timeout)
-    })
-    return res.ok ? await res.json() : null
-  } catch {
-    return null
-  }
-}
-
-/** 等它起来（pm2 拉起到真正监听之间有几百毫秒的空窗） */
-async function waitStatus (port, timeoutMs = 25000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const s = await probeStatus(port)
-    if (s) return s
-    await new Promise(resolve => setTimeout(resolve, 500))
-  }
-  return null
-}
-
-function fmtUptime (ms) {
-  if (!ms || ms < 0) return '—'
-  const hours = Math.floor(ms / 3600000)
-  const minutes = Math.floor((ms % 3600000) / 60000)
-  return hours ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`
 }
 
 /* ------------------------------------------------------------ 插件 */
@@ -165,21 +94,61 @@ export class CampImDeploy extends plugin {
   constructor () {
     super({
       name: '王者营地消息运维',
-      dsc: '部署 / 查看营地消息服务端（im-server 分支上那套）',
+      dsc: '部署 / 查看营地消息服务端',
       event: 'message',
       // ⚠️ 必须是负的：`#营地消息` 那条规则是精确匹配 `^#营地消息$`，
       //    `#营地消息部署` 不会被它吃掉，但保险起见和 watchDeploy 保持一致。
       priority: -1,
       rule: [
+        // 一步到位：写配置 + 立刻部署。主人和群友用的是同一条
+        // （群友装了这个插件之后，在他自己那台机器人上就是主人）
+        { reg: '^#营地消息接入\\s+(\\S+)\\s+(\\S+)$', fnc: 'connect', permission: 'master' },
         { reg: '^#营地消息部署$', fnc: 'deploy', permission: 'master' },
         { reg: '^#营地消息服务$', fnc: 'status', permission: 'master' }
       ]
     })
   }
 
+  /* -------------------------------------------------------- 接入 */
+
+  /**
+   * 一步接入：`#营地消息接入 <地址> <令牌>`。
+   *
+   * **先试连再落盘** —— 地址或令牌写错了要当场知道，而不是等发部署指令时才报错。
+   */
+  async connect (e) {
+    const m = /^#营地消息接入\s+(\S+)\s+(\S+)$/.exec(String(e.msg || '').trim())
+    if (!m) return e.reply('格式：#营地消息接入 <地址> <令牌>', shouldQuote())
+
+    const url = normalizeBase(m[1])
+    const token = m[2].trim()
+
+    if (!/^https?:\/\//i.test(url)) {
+      return e.reply('地址要以 http:// 或 https:// 开头', shouldQuote())
+    }
+    if (token.length < 20) {
+      return e.reply('令牌看着不对（太短了）。' + GROUP_HINT, shouldQuote())
+    }
+
+    const probe = await fetchPackageMeta({ name: PKG_NAME, url, token })
+    if (!probe.ok) {
+      return e.reply(
+        `连不上分发服务：${probe.message}\n` +
+        '地址和令牌都没错的话，' + GROUP_HINT,
+        shouldQuote()
+      )
+    }
+
+    Config.modify('config', 'distUrl', url)
+    Config.modify('config', 'distToken', token)
+    logger.mark(`[${PluginName}] 已接入分发服务：${url}`)
+
+    return this.deploy(e, { adopted: true })
+  }
+
   /* -------------------------------------------------------- 部署 */
 
-  async deploy (e) {
+  async deploy (e, { adopted = false } = {}) {
     if (!pm2Bin()) {
       return e.reply(
         '没找到 pm2，先装一个再部署：npm i -g pm2\n' +
@@ -188,20 +157,14 @@ export class CampImDeploy extends plugin {
       )
     }
 
-    if (!git(['--version'], { timeout: 20000 }).ok) {
+    const { url, token } = distConfig()
+    if (!url || !token) {
       return e.reply(
-        '没找到 git，拉不了服务端代码。装好 git（重开云崽让它认出新的 PATH）再来',
+        adopted
+          ? '配置没写进去，重发一次试试'
+          : `还没接入分发服务。${GROUP_HINT}`,
         shouldQuote()
       )
-    }
-
-    const url = originUrl()
-    if (!url) {
-      return e.reply([
-        '这个插件仓库没配 origin 远端，不知道去哪拉服务端代码。',
-        `手动克隆到 ${path.relative(YunzaiRoot, SERVER_DIR)} 之后，再发一次部署就能接着走：`,
-        `  git clone --depth 1 -b ${SERVER_BRANCH} <仓库地址> ${SERVER_DIR}`
-      ].join('\n'), shouldQuote())
     }
 
     // 同名进程但不是我们起的 —— 别去碰它，只说清楚（见文件头第 1 条规矩）
@@ -213,32 +176,51 @@ export class CampImDeploy extends plugin {
       ].join('\n'), shouldQuote())
     }
 
+    // 认不出是我们的目录 → 拒绝动它（见文件头第 2 条规矩）
+    const hasState = fs.existsSync(path.join(SERVER_DIR, STATE_FILE))
+    if (fs.existsSync(SERVER_DIR) && !fs.existsSync(ENTRY_FILE) && !hasState) {
+      return e.reply(
+        `${path.relative(YunzaiRoot, SERVER_DIR)} 已经存在，但里面没有 camp-im-server.js —— ` +
+        '看不出是本插件的目录，不敢动它。确认没用了就手动删掉再部署',
+        shouldQuote()
+      )
+    }
+
     const restarting = Boolean(running)
     await e.reply(
       restarting
-        ? '正在重启营地消息服务…'
-        : '正在部署营地消息服务（要从 git 拉一下服务端代码），几十秒就好…',
+        ? '正在更新营地消息服务…'
+        : '正在部署营地消息服务（要从分发服务下载代码），几十秒就好…',
       shouldQuote()
     )
 
     try {
-      let codeFromLocal = false
-      const fetched = fetchServerCode(url)
-      if (!fetched.ok) {
-        if (!fs.existsSync(ENTRY_FILE)) {
-          throw new Error(
-            `拉取 ${SERVER_BRANCH} 分支失败：${fetched.err || '未知原因'}\n` +
-            `· 确认这个分支已经推到远端（部署要从 origin 拉）\n` +
-            '· 看看这台服务器能不能访问远端'
-          )
+      // 老布局遗留：以前是 git 浅克隆，现在不用 git 了，把 .git 清掉免得困惑
+      const oldGit = path.join(SERVER_DIR, '.git')
+      if (fs.existsSync(oldGit)) {
+        try {
+          fs.rmSync(oldGit, { recursive: true, force: true })
+          logger.mark(`[${PluginName}] 清掉旧的 .git（服务端代码现在从分发服务下载）`)
+        } catch (error) {
+          logger.warn(`[${PluginName}] 清旧 .git 失败（不影响部署）：${error?.message || error}`)
         }
-        codeFromLocal = true
-        logger.warn(`[${PluginName}] ${SERVER_BRANCH} 分支拉取失败，用本地已有的代码继续：${fetched.err}`)
+      }
+
+      const installed = await installPackage({
+        name: PKG_NAME,
+        url,
+        token,
+        destDir: SERVER_DIR,
+        entry: 'camp-im-server.js',
+        logger
+      })
+      if (!installed.ok) {
+        throw new Error(`${installed.message}\n如果地址令牌没问题，${GROUP_HINT}`)
       }
 
       const missing = NEEDED.filter(f => !fs.existsSync(path.join(PluginPath, f)))
       if (missing.length) {
-        throw new Error(`服务端文件不齐，缺：${missing.join('、')}。请主人检查 ${SERVER_BRANCH} 分支上的文件是否完整`)
+        throw new Error(`服务端文件不齐，缺：${missing.join('、')}`)
       }
 
       const startup = restarting
@@ -266,12 +248,15 @@ export class CampImDeploy extends plugin {
       }
 
       resetPm2Cache()
-      logger.mark(`[${PluginName}] 营地消息服务已${restarting ? '重启' : '部署'}：127.0.0.1:${port}（${SERVER_DIR}）`)
+      logger.mark(
+        `[${PluginName}] 营地消息服务已${restarting ? '重启' : '部署'}：127.0.0.1:${port}` +
+        `（${SERVER_DIR}，版本 ${String(installed.sha).slice(0, 8)}${installed.updated ? '' : '，已是最新'}）`
+      )
 
       const online = (status.clients || []).filter(c => c.state === 'online').length
       const total = (status.clients || []).length
       const lines = [
-        `✅ 营地消息服务${restarting ? '已重启' : '部署好了'}`,
+        `✅ 营地消息服务${restarting ? '已更新' : '部署好了'}`,
         '',
         `进程：${PROC_NAME}（pm2 托管，开机自启）`,
         `端口：${port}`,
@@ -282,8 +267,8 @@ export class CampImDeploy extends plugin {
         lines.push('', '还没有可用的营地账号\n发 #营地wx全局登录 扫码添加')
       }
 
-      if (codeFromLocal) {
-        lines.push('', `⚠️ 远端没连上（或者 ${SERVER_BRANCH} 分支还没推上去），用的是本地已有的服务端代码。`)
+      if (!installed.updated && restarting) {
+        lines.push('', '代码本来就是最新的，只重启了一遍。')
       }
 
       lines.push('', '看状态：发 #营地消息')
@@ -303,7 +288,7 @@ export class CampImDeploy extends plugin {
     const lines = ['📨 营地消息服务']
 
     if (!proc) {
-      lines.push('', '没在跑', '发 #营地消息部署 装一个')
+      lines.push('', '没在跑', `发 #营地消息部署 装一个（${GROUP_HINT}）`)
       return e.reply(lines, shouldQuote())
     }
     if (!isOurProcess(proc, SERVER_DIR)) {
