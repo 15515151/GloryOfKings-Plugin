@@ -43,6 +43,18 @@ const STALE_MS = 15 * 60 * 1000
 const REFRESH_COOLDOWN_MS = 10 * 60 * 1000
 
 /**
+ * **发起人自己**的现刷门限，比上面那个短得多。
+ *
+ * 理由：他刚发完指令、看的又是自己，这时候还给他几分钟前的旧快照就是答非所问。
+ * 实测（2026-09-20）主人刚上线两分钟、刚开一局，图上却还写着「离线」—— 他那条订阅
+ * 是开了战绩推送的正式订阅，不吃现刷，而常驻轮询正处在离线退避里（判定离线 → 跳两轮），
+ * 于是快照整整滞后十分钟。
+ *
+ * 代价只有**一次 profile 请求**（在打的人再加一次战绩列表），60 秒也足够挡住连点。
+ */
+const SELF_REFRESH_COOLDOWN_MS = 60 * 1000
+
+/**
  * 单次最多现刷几个人。每人一次 profile（在打的人再加一次战绩列表）。
  * 采集是**多路并发**的，路数取决于池里有几个可用账号（见 refreshSnapshots）：
  * 单账号约 1.5 秒/人，上限 24 人就是 30 多秒；4 个号不到 10 秒。
@@ -124,7 +136,8 @@ export class WhoIsPlaying extends plugin {
       return
     }
 
-    // 现刷影子订阅的快照：这批人不在常驻轮询里，这条指令是唯一的请求来源（见 refreshSnapshots）
+    // 现刷快照：影子订阅（这批人不在常驻轮询里，这条指令是他们唯一的请求来源）
+    // 外加**发起人自己**（见 refreshSnapshots 的闸门 ①）
     await this.refreshSnapshots(e, subs)
 
     // 现刷会改订阅项，出图前重读一次，否则用的还是刷新前那份快照
@@ -189,46 +202,68 @@ export class WhoIsPlaying extends plugin {
   }
 
   /**
-   * 现刷影子订阅的在线快照。这批人（没开任何推送、只绑了营地号的群友）**不在常驻轮询里**，
-   * 这条指令是他们唯一的请求来源——理由见文件头「快照有两个来源」。
+   * 现刷订阅的在线快照。两种人靠它：**没开任何推送的影子订阅**（他们不在常驻轮询里，
+   * 这条指令是唯一的请求来源，理由见文件头「快照有两个来源」），以及**发起人自己**。
    *
    * 三道闸门，缺一道就能把营地配额打爆：
-   *  ① 只刷纯影子订阅：开过上下线提醒 / 战绩推送的人由常驻轮询管，那是另一条线，
-   *     不能因为有人瞄了一眼名单就把他们挨个查一遍（还可能在群里触发一条播报）
-   *  ② REFRESH_COOLDOWN_MS 门限：刚刷过的直接复用，连点不会重复打请求
+   *  ① 只刷纯影子订阅 + 发起人自己：开过上下线提醒 / 战绩推送的人由常驻轮询管，
+   *     那是另一条线，不能因为有人瞄了一眼名单就把他们挨个查一遍。
+   *     ⚠️ 但**发起人自己是例外** —— 他看的就是自己，而正式订阅正处在离线退避里时
+   *     快照能滞后十分钟（实测刚上线却写着「离线」），一次 profile 的代价换「发指令
+   *     就看到现在的状态」，值。
+   *  ② 门限：刚刷过的直接复用，连点不会重复打请求。发起人用短得多的
+   *     SELF_REFRESH_COOLDOWN_MS，否则他一样会被十分钟门限挡住。
    *  ③ MAX_REFRESH 上限 + 按快照最旧优先：人特别多的群先刷最不准的那批，
    *     剩下的用旧数据出图（图上会带「数据较旧」标记）
    *
    * 单个号失败（频控、登录态问题、隐藏主页）不中断整轮：留旧快照就好。
    * 上一条指令还在刷时直接返回，两条指令并发刷会把请求量翻倍。
    *
-   * @param {object} e 消息事件，只用来发等待提示
+   * @param {object} e 消息事件，只用来发等待提示、认出发起人
    * @param {Array<[string, object]>} subs 本群名单里的订阅项
    */
   async refreshSnapshots (e, subs) {
     const now = Date.now()
-    const due = subs
-      .filter(([, sub]) => isPureShadow(sub))
-      .filter(([, sub]) => now - (Number(sub.lastSeenAt) || 0) > REFRESH_COOLDOWN_MS)
-      .sort((a, b) => (Number(a[1].lastSeenAt) || 0) - (Number(b[1].lastSeenAt) || 0))
-      .slice(0, MAX_REFRESH)
+    const self = String(e.user_id || '')
 
-    if (!due.length || refreshing) return
+    const due = subs
+      .filter(([qq, sub]) => {
+        // 影子订阅之外，只额外放行发起人自己
+        if (qq !== self && !isPureShadow(sub)) return false
+        const cd = qq === self ? SELF_REFRESH_COOLDOWN_MS : REFRESH_COOLDOWN_MS
+        return now - (Number(sub.lastSeenAt) || 0) > cd
+      })
+      .sort((a, b) => (Number(a[1].lastSeenAt) || 0) - (Number(b[1].lastSeenAt) || 0))
+
+    // 发起人必须刷到：上面按「快照最旧优先」排完还要按 MAX_REFRESH 截断，
+    // 他自己要是不在最旧那批就会被挤掉 —— 那正是这次要修的场景。
+    const selfEntry = due.find(([qq]) => qq === self)
+    const picked = due.slice(0, MAX_REFRESH)
+    if (selfEntry && !picked.includes(selfEntry)) picked[picked.length - 1] = selfEntry
+
+    if (!picked.length || refreshing) return
 
     refreshing = true
     try {
       // 一个人一秒多，串行拉完要好一会儿，不先说一声群里会以为机器人卡死了。
       // 注意请求是**按账号并发**的（N 个号 N 路并行），秒数要按账号数折算，
       // 不然多账号的部署会被自己的提示吓到（明明 5 秒能刷完，写着 20 秒）。
-      const workers = Math.max(1, Math.min(ApiService.usableAccountCount(), due.length))
-      const eta = Math.max(1, Math.ceil(due.length * 1.5 / workers))
-      await e.reply(`正在刷新 ${due.length} 人的在线状态，约需 ${eta} 秒`, shouldQuote())
+      // 只有发起人一个人时不报秒数：他多半就是私聊发了条指令，几秒内就出图，
+      // 「正在刷新 1 人的在线状态，约需 1 秒」纯属噪音。
+      const workers = Math.max(1, Math.min(ApiService.usableAccountCount(), picked.length))
+      const eta = Math.max(1, Math.ceil(picked.length * 1.5 / workers))
+      await e.reply(
+        picked.length === 1 && selfEntry
+          ? '正在读取你的最新状态'
+          : `正在刷新 ${picked.length} 人的在线状态，约需 ${eta} 秒`,
+        shouldQuote()
+      )
 
       // 采集并发、写盘串行：请求会被 api 层轮着分给不同账号（见 utils/parallel.js），
       // 所以开 N 路协程就能真正并行；而 mergeSubState 是**整表读-改-写**，
       // 并发调它会互相覆盖（后写的把先写的冲掉），必须等采完再一个一个写。
       const collected = []
-      await mapConcurrent(due, async ([qq, sub]) => {
+      await mapConcurrent(picked, async ([qq, sub]) => {
         const campId = getCurrentId(qq)
         if (!campId || isProfileHidden(campId)) return
 
@@ -461,7 +496,7 @@ function renderText ({ playing, justEnded, inGameIdle, online, offline, unknown,
     lines.push('（刚轮询到、还没攒到快照，或者营地没给这个号的在线状态）')
   }
 
-  lines.push('', '数据来自战绩推送的轮询快照，不会额外请求营地；离线时检查间隔会自动拉长')
+  lines.push('', '数据有延迟，刚开局的稍后再发一次')
 
   return lines.join('\n')
 }
