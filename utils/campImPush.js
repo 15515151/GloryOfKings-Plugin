@@ -167,6 +167,9 @@ function rememberLastPush (owner, msg) {
     toUserId: String(msg.fromUserId),
     toRoleId: String(msg.fromRoleId || ''),
     fromRoleId: String(msg.raw?.toRoleId || ''),
+    // ⚠️ 名字一定要存：退路取到的可能是**别人的**推送（同一个营地号下不同好友，
+    //    或者两个号互相串），光靠 id 认不出来，得拿被引用原文里的发信人名核对。
+    nick: String(msg.fromRoleName || ''),
     at: Date.now()
   }
   setLastPush(owner, info)
@@ -191,6 +194,7 @@ export function rememberRef (msgId, msg) {
     selfUserId: String(msg.selfUserId),
     toUserId: String(msg.fromUserId),
     toRoleId: String(msg.fromRoleId || ''),
-    fromRoleId: String(msg.raw?.toRoleId || '')
+    fromRoleId: String(msg.raw?.toRoleId || ''),
+    nick: String(msg.fromRoleName || '')
   })
 }

@@ -247,27 +247,30 @@ export class CampIm extends plugin {
    *
    * @returns {Promise<boolean>} true = 已处理（别再往下走）；false = 放行给别的规则
    */
-  async replyByQuote (e, expectCampId = '') {
+  async replyByQuote (e, quotedText = '') {
     const refId = e.reply_id || e.source?.message_id || e.source?.seq
     if (!refId) return false
 
     const text = String(e.msg || '').trim()
     if (!text) return false
 
-    // ① 精确匹配
-    let ref = store.getRef(refId)
-    // ② 退路：该归属人最近收到的那条推送（按人分开存，重启也在）
-    if (!ref) ref = getLastPush(String(e.user_id || ''))
+    // ① 精确匹配；② 退路：该归属人最近收到的那条推送（按人分开存，重启也在）
+    const ref = store.getRef(refId) || getLastPush(String(e.user_id || ''))
     if (!ref) return false
 
-    // ⚠️⚠️ 退路取到的可能是**另一个营地号**的推送（主人名下两个号都有归属人时尤其容易串），
-    //    也可能是「更晚推来的另一个好友」。被引用原文里写着 `#营地回复 <营地号>`，
-    //    对不上就说明认错了人 —— 宁可什么都不发，也不能把消息发给不相干的好友
-    //    （2026-09-20 实测：引用 Cchanlan 的推送，回给了更晚推来的缨）。
-    if (expectCampId && String(ref.selfUserId) !== String(expectCampId)) {
-      logger.warn(`[营地消息] 引用回复的营地号对不上（推送 ${expectCampId}，取到 ${ref.selfUserId}），不回复`)
-      await e.reply('这条推送太旧，认不出收件人\n引用最新那条，或等 TA 再发一条', shouldQuote())
-      return true
+    // ⚠️⚠️ **核对收件人**：被引用原文里应当同时出现这条 ref 的**营地号**和**发信人名**。
+    //    退路（「最近一条推送」）在主人引用**较旧**那条时会取到别人的 —— 2026-09-20 实测：
+    //    引用「缨发给 1536597962」的推送，回给了 1580886057（两个号都有归属人，特别容易串）。
+    //    光看 id 认不出来，只有原文能证明「这条推送确实是 TA 发的」。
+    //    宁可什么都不发，也不能把消息发给不相干的好友。
+    if (quotedText) {
+      const missCamp = !String(quotedText).includes(String(ref.selfUserId))
+      const missNick = Boolean(ref.nick) && !String(quotedText).includes(String(ref.nick))
+      if (missCamp || missNick) {
+        logger.warn(`[营地消息] 引用回复认不出收件人（原文对不上 ref ${ref.selfUserId}/${ref.nick || '-'}），不回复`)
+        await e.reply('这条推送太旧，认不出收件人\n引用最新那条，或等 TA 再发一条', shouldQuote())
+        return true
+      }
     }
 
     await this.#doReply(e, ref.selfUserId, text, ref)
@@ -367,24 +370,22 @@ async function tryQuoteImpl (e) {
   if (!text) return false
 
   // ① 精确匹配：按被引用消息的 id 查（适配器能给出 id 时才有）
-  if (store.getRef(refId)) {
-    const camp = new CampIm()
-    return camp.replyByQuote(e)
-  }
+  const hit = store.getRef(refId)
 
-  // ② 退路：读被引用消息的原文，看是不是我们的推送
+  // ② 读被引用消息的原文：既用来判「是不是我们的推送」，也用来**核对收件人**
   //    ⚠️ 不能只看「该归属人最近有没有收到推送」—— 那样会把主人引用的
   //    **任何** 消息都当成营地回复（别的插件的引用消息也被吃掉）。
   //    所以这里必须真的把被引用的那条读出来，认「📩」这个推送抬头。
+  //    ⚠️ 精确命中时**也读**：读到的原文能核对收件人（见 replyByQuote 里的校验），
+  //       多花一次读消息，换「绝不回错人」，值。
   const quoted = await readQuoted(e)
-  if (!quoted || !isCampPush(quoted)) return false
 
-  // 推送原文里带着 `#营地回复 <营地号>` —— 拿它校验「退路取到的那条最近推送」
-  // 是不是同一个营地号的，防止两个号互相串（见 replyByQuote 里的注释）
-  const expectCampId = String(quoted).match(/#营地回复\s*(\S+)/)?.[1] || ''
+  // 读不到原文时只能信精确匹配；两者都没有就放行
+  if (!quoted && !hit) return false
+  if (quoted && !isCampPush(quoted)) return false
 
   const camp = new CampIm()
-  return camp.replyByQuote(e, expectCampId)
+  return camp.replyByQuote(e, quoted || '')
 }
 
 /**
