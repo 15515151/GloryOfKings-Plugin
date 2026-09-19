@@ -91,6 +91,9 @@ export function init (ctx) {
   ctx.registerApi('post', '/gok-camp-im/accounts', async (req, res) => {
     try {
       const list = Array.isArray(req.body?.accounts) ? req.body.accounts : []
+      // ⚠️ 留一行诊断日志：body 没解析出来时这里是 0 项，而接口照样回 ok ——
+      //    表现成「点了保存、刷新又变回去」。有这行就能一眼分清是「没收到」还是「收到了没写进去」。
+      ctx.logger.mark(`[营地消息] 保存开关：收到 ${list.length} 项（其中关 ${list.filter(i => i?.enable !== true).length} 个），body ${req.body ? '已解析' : '为空'}`)
       for (const item of list) {
         const userId = String(item?.userId || '').trim()
         if (!userId) continue
@@ -98,7 +101,9 @@ export function init (ctx) {
       }
       // 让插件重读（否则它内存里的缓存还是旧的）
       store.invalidate()
-      res.json({ ok: true, ...snapshot(), message: '已保存' })
+      const after = snapshot()
+      ctx.logger.mark(`[营地消息] 保存后：${after.enabled}/${after.total} 个开着`)
+      res.json({ ok: true, ...after, message: '已保存' })
     } catch (error) {
       ctx.logger.warn('[营地消息] 保存开关失败', error)
       res.status(400).json({ ok: false, error: error.message || '保存失败' })

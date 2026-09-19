@@ -1,7 +1,10 @@
 import lodash from 'lodash'
 import { Config, PluginPath, PluginName } from '#components'
 import authStore from './utils/authStore.js'
-import * as campImStore from './utils/campImStore.js'
+// ⚠️ 用具名导入，**不要用 `import * as`** —— 锅巴重新扫描时用带 query 的动态 import 加载本文件，
+//    那个上下文里命名空间导入会报 `does not provide an export named 'default'`，整个 support 载入失败
+//    （2026-09-20 实测：锅巴「插件配置」页里那一堆开关全没了）。用具名导入没有这个问题。
+import { getAccountSwitches, setAccountEnabled, invalidate } from './utils/campImStore.js'
 
 function getAuthPoolSnapshot () {
   const accounts = authStore.getGuobaAccounts().map(account => ({
@@ -28,7 +31,7 @@ function getAuthPoolSnapshot () {
  *    这里放一份是为了让主人不用切页面，在「插件配置」里就能顺手开关。
  */
 function getCampImSnapshot () {
-  const switches = campImStore.getAccountSwitches()
+  const switches = getAccountSwitches()
   const accounts = authStore.listAccounts()
     .filter(a => a?.userId && a?.userSig)
     .map(a => {
@@ -828,9 +831,9 @@ export function supportGuoba () {
           for (const item of (data['campIm.accounts'] || [])) {
             const userId = String(item?.userId || '').trim()
             if (!userId) continue
-            campImStore.setAccountEnabled(userId, item.enable === true)
+            setAccountEnabled(userId, item.enable === true)
           }
-          campImStore.invalidate()
+          invalidate()
         }
 
         for (const key in data) {

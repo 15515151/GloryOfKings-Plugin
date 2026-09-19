@@ -193,3 +193,29 @@ export function getFriendByIndex (owner, selfUserId, idx) {
 export function invalidate () {
   cache = null
 }
+
+/**
+ * 同一份函数再挂一份 default。
+ *
+ * ⚠️ 为什么要有：锅巴加载 `guoba.support.js` 时会报
+ * `The requested module './utils/campImStore.js' does not provide an export named 'default'`
+ * （2026-09-20 实测，只在云崽进程里复现，脱机 `import()` 同一文件却正常）——
+ * 也就是**那个上下文里它是按「默认导入」取的**。本文件本来只有命名导出，
+ * 于是整个 `guoba.support.js` 载入失败，锅巴「插件配置」页里那一堆营地开关全没了。
+ * 挂个 default 两种写法都能用，代价是这里多一个聚合对象。
+ */
+export default {
+  getCursor,
+  setCursor,
+  resetCursor,
+  addRef,
+  getRef,
+  isAccountEnabled,
+  setAccountEnabled,
+  getAccountSwitches,
+  setLastPush,
+  getLastPush,
+  setFriendList,
+  getFriendByIndex,
+  invalidate
+}
