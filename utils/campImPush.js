@@ -7,7 +7,7 @@
  *
  * ## 长什么样
  * ```
- * [头像图]                        ← 游戏头像 fromRoleIcon；没有就回落 QQ 头像
+ * [头像+昵称卡片图]               ← 渲染出来的小卡片：游戏头像 + 角色名（营地绿风格）
  * 📩 我就只会补兵                 ← 只留游戏角色名
  * 你干嘛呢
  * （微信安卓 荣耀王者）
@@ -15,14 +15,18 @@
  * 回复：引用这条消息，或发 #营地回复 1580886057 <内容>
  * ```
  *
- * ⚠️ **头像发失败要降级成纯文字** —— 不能因为一张图发不出去就把消息丢了。
+ * ⚠️ **引用回复靠的是下面这段文字正文**（认 `📩` 抬头 + 营地号 + 发信人昵称，
+ *    见 apps/campIm.js 的 replyByQuote）—— 所以卡片图只是好看，正文一个字都不能省。
+ * ⚠️ **图渲染/发送失败要降级成纯文字** —— 不能因为一张图发不出去就把消息丢了。
  */
-import { Config } from '#components'
+import path from 'node:path'
+import { Config, PluginPath } from '#components'
 import authStore from './authStore.js'
 import { sendPrivate } from './privateMsg.js'
 import { addRef, setLastPush, getLastPush as storeGetLastPush } from './campImStore.js'
 import { sendMaster } from './masterMsg.js'
 import { qlogoUrl } from './avatar.js'
+import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 
 // ⚠️ `segment` 是云崽的全局变量（lib/plugins/loader.js 里 global.segment = segment），
 //    不能从 #components import —— 本仓库其他文件（如 apps/heroDetail.js）也是直接用全局的。
@@ -67,13 +71,17 @@ function clip (s, n = 20) {
 function buildContent (msg) {
   // ⭐ 只留角色名（游戏里的名字），不带营地账号昵称 —— 两个名字摆一起反而看不清谁是谁
   const title = clip(msg.fromRoleName, 16) || clip(msg.fromUserId, 12)
+  const body = msg.text || '（空消息）'
 
-  const lines = [
-    `📩 ${title}`,
-    msg.text || '（空消息）'
-  ]
-  if (msg.fromRoleDesc) lines.push(`（${clip(msg.fromRoleDesc, 24)}）`)
-  lines.push('', `回复：引用这条消息，或发 #营地回复 ${msg.selfUserId} <内容>`)
+  // ⚠️ 图下这一行是**引用回复的暗号**：`📩` 是 tryQuote 的识别标志、营地号是 missCamp 锚点、
+  //    收件人名是 missNick 锚点（拿不到消息 id 时的兜底校验）——三样都折进这一行，
+  //    既不跟图里的头像/昵称重复显示，又一个锚点都不少。正文本身已经渲染进图里了。
+  const caption = `📩 回复 ${title}：引用本条，或发 #营地回复 ${msg.selfUserId} <内容>`
+
+  // 图挂了降级纯文字用这份 —— 得带上正文，不能只发锚点（不然消息内容全丢了）
+  const fallbackLines = [`📩 ${title}`, body]
+  if (msg.fromRoleDesc) fallbackLines.push(`（${clip(msg.fromRoleDesc, 24)}）`)
+  fallbackLines.push('', `回复：引用本条，或发 #营地回复 ${msg.selfUserId} <内容>`)
 
   // 游戏头像优先；没有就用发信人的 QQ 头像兜底
   let image = msg.fromRoleIcon || ''
@@ -85,7 +93,36 @@ function buildContent (msg) {
     }
   }
 
-  return { text: lines.join('\n'), image }
+  // 卡片副标题：区服/段位那类附属信息（fromRoleDesc），没有就不摆
+  const sub = msg.fromRoleDesc ? clip(msg.fromRoleDesc, 24) : ''
+
+  return { caption, fallbackText: fallbackLines.join('\n'), image, name: title, sub, message: body }
+}
+
+/**
+ * 把整条营地消息（头像 + 昵称 + 来源 + 正文）渲染成一张卡片（营地绿风格，webp）。
+ *
+ * 图只是好看，认收件人靠的是图下文字（见文件头注释）；渲染失败返回 '' 让上游降级。
+ *
+ * @param {{image?:string, name:string, sub?:string, message?:string}} card
+ * @returns {Promise<string|Buffer>} 云崽 segment 的图，或 ''（失败）
+ */
+async function renderCard (card) {
+  try {
+    return await puppeteer.screenshot('gok-camp-im-msg', {
+      // 见 apps/campFriend.js 的说明：_res_path 是「从 temp/html/<name>/ 回到 resources」的相对路径
+      tplFile: path.join(PluginPath, 'resources', 'html', 'campImMsg.html'),
+      _res_path: '../../../plugins/GloryOfKings-Plugin/resources/',
+      imgType: 'webp',
+      avatar: card.image || '',
+      name: card.name || '营地好友',
+      sub: card.sub || '',
+      message: card.message || '（空消息）'
+    })
+  } catch (e) {
+    logger.debug?.(`[营地消息] 卡片渲染失败（${e?.message || e}），降级用裸头像`)
+    return ''
+  }
 }
 
 /**
@@ -100,24 +137,29 @@ export async function pushToOwner (msg, { bot } = {}) {
   const owner = ownerOf(msg.selfUserId)
   if (!owner) return { ok: false, reason: 'no_owner' }   // 无归属 → 按约定不管
 
-  const { text, image } = buildContent(msg)
-  const withImage = pushImageEnabled() && Boolean(image)
+  const { caption, fallbackText, image, name, sub, message: body } = buildContent(msg)
+  // 正文已经渲染进图，所以没头像也照样出图（图里有 🎮 占位）；只有配置里关了才不出
+  const withImage = pushImageEnabled()
 
-  // ① 带头像图发（图是营地 CDN 的 URL，直接给 segment.image 就行）
+  // ① 带图发：整条消息渲染成卡片；渲染挂了、又恰好有头像 URL 就退回裸头像
   let sent = { ok: false, reason: 'skip_image' }
   if (withImage) {
-    try {
-      const message = [segment.image(image), '\n' + text]
-      sent = await sendPrivate(owner, message, { bot })
-    } catch (e) {
-      sent = { ok: false, reason: e?.message || 'image_failed' }
+    let pic = await renderCard({ image, name, sub, message: body })
+    if (!pic && image) pic = segment.image(image)   // 渲染失败且有头像 → 裸头像兜底
+    if (pic) {
+      try {
+        const message = [pic, caption]
+        sent = await sendPrivate(owner, message, { bot })
+      } catch (e) {
+        sent = { ok: false, reason: e?.message || 'image_failed' }
+      }
     }
   }
 
-  // ② 图挂了就降级纯文字（不因为一张图把消息丢了）
+  // ② 图挂了就降级纯文字（带正文的那份，不因为一张图把消息内容丢了）
   if (!sent.ok) {
     if (withImage) logger.debug?.(`[营地消息] 头像发送失败（${sent.reason}），降级纯文字`)
-    sent = await sendPrivate(owner, text, { bot })
+    sent = await sendPrivate(owner, fallbackText, { bot })
   }
 
   if (!sent.ok) {
