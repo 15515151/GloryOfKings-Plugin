@@ -101,7 +101,7 @@ async function runNotify (options = {}) {
 
   const attempts = (state.pendingVersion === version ? state.attempts : 0) + 1
   if (!options.force) {
-    // 先落盘「该发」这件事：发到一半被 pm2 restart 打断也不会丢掉这个意图
+    // 先落盘「该发」这件事：发到一半进程被打断（重启/崩溃）也不会丢掉这个意图
     writeNotifyState({ pendingVersion: version, attempts, lastAttemptAt: Date.now() })
   }
 

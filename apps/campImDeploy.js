@@ -1,67 +1,53 @@
 /**
- * 营地消息服务端的**一键部署**：#营地消息部署 / #营地消息服务。
+ * 营地消息服务端的**一键部署**：#营地消息接入 / #营地消息部署 / #营地消息重装 / #营地消息服务。
  *
- * ## 服务端代码从哪来
+ * ## 服务端是什么
  *
- * **不在 master 上** —— 单独住在仓库的 **`im-server` 分支**里。部署时把那个分支
- * 浅克隆到 `<插件>/server-im/`，`.gitignore` 把整个 `server-im/` 挡住，所以：
- *   · 客户端的插件更新（拉 master）永远碰不到服务端代码
- *   · 服务端也不用跟着插件的发版节奏走
- *
- * ⚠️ 分支名是 `im-server`。**别和另外两个搞混**：
- *   · `watch-server` → 营地观战服务（apps/watchDeploy.js，落在 `server/`）
- *   · `server`       → 营地ID共享库（apps/shareDeploy.js）
+ * 和观战一样，是**按平台下发的原生二进制**（`gok-im`），从主人的分发服务取回：
+ * `/latest?target=` → `/download` → `/key` → AES-256-GCM 解密 → sha256 校验
+ * → 解开得单文件（契约 §2.2）。
  *
  * ## 为什么部署在插件目录里
  *
- * 服务端要读 `data/AuthPool.json`。留在 `server-im/` 下，`HERE/..` 这个相对路径
- * 天然成立 —— 一行路径代码都不用改。它也自带一份零依赖的 `lib/xxtea.js`，
- * 不依赖插件本体的 utils（服务端是独立进程，import 不了那边的云崽运行时依赖）。
+ * 服务端要读写 `<插件>/data/AuthPool.json`（授权池）。默认它按 cwd 找
+ * `<cwd>/data/AuthPool.json`，所以插件这边**显式**传 `GOK_AUTH_POOL`
+ * （见 utils/service.js 的 buildEnv）—— 观战二进制的默认是 `<exe_dir>/../data`，
+ * 两者默认值不一样，不显式传就会读到一个空的池子。
  *
- * ## 两条硬规矩（跟 watchDeploy / shareDeploy 同源）
+ * ## 为什么不落 `<exe_dir>/../data`
  *
- * 1. **只动自己起的那个进程**：cwd 或入口脚本必须落在本插件的 server-im 目录下。
- *    光比进程名会把别人的同名进程停掉 —— 这条教训是从 meme 的卸载逻辑带过来的。
- * 2. **认不出就不动**：`server-im/` 存在、没 `.git`、里面又没有 `camp-im-server.js`
- *    （认不出是我们的目录）→ 拒绝，让主人自己确认。
+ * 消息服务的二进制放 `server-im/`，数据仍在插件 `data/`：和 `server/` 观战对齐，
+ * 也不会和插件本体的东西重叠。
+ *
+ * ## 三条硬规矩（和 watchDeploy 同源）
+ *
+ * 1. **认不出就不动**：`server-im/` 存在、没台账、也没老 JS 入口 → 拒绝，让主人确认。
+ * 2. **失败保留旧版**：安装全程在 `.staging-*` 里，校验通过才 rename 覆盖。
+ * 3. **不保活**：进程退了只记日志；心跳由二进制自己发。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { PluginPath, PluginName, Config } from '#components'
 import { shouldQuote } from '#utils'
-import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
+import { detectTarget } from '../utils/platform.js'
+import { fetchLatest, installNative, readDistConfig, safeUrl } from '../utils/dist.js'
+import { fmtUptime, waitStatus } from '../utils/deploy.js'
 import {
-  installPackage, fetchPackageMeta, probeStatus, waitStatus, fmtUptime,
-  normalizeBase, STATE_FILE
-} from '../utils/deploy.js'
+  bindSummary, binPath, checkUpdate, ensureService, logFile, readLogTail, serverDir,
+  servicePort, serviceStatus, startService, stopService
+} from '../utils/service.js'
 
 /** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）—— 只为把路径显示得短一点 */
 const YunzaiRoot = path.resolve(PluginPath, '../..')
 
-/** 服务端代码解到这里（在插件目录里，被 .gitignore 挡着，不跟插件本体一起提交） */
-const SERVER_DIR = path.join(PluginPath, 'server-im')
-const ENTRY_FILE = path.join(SERVER_DIR, 'camp-im-server.js')
+/** 分发服务上的包名 */
+const KIND = 'im'
 
-/** 分发服务上的包名（对应 `im-server` 分支） */
-const PKG_NAME = 'im'
-
-const PROC_NAME = 'gok-im'
-const DEFAULT_PORT = 8900
+/** 老 JS 布局的入口文件名，只用来识别「这台装的是老服务」 */
+const LEGACY_ENTRY = 'camp-im-server.js'
 
 /** 引导语：没配分发服务时统一用这句 */
 const GROUP_HINT = '进群 972915804 找主人要部署地址和令牌，然后发 #营地消息接入 <地址> <令牌>'
-
-/**
- * 解下来之后必须齐活的文件。少一个服务端起不来。
- *
- * ⚠️ `lib/xxtea.js` 由**代码包**提供（服务端自带一份零依赖的），
- *    和观战那边从插件本体读 `utils/xxtea.js` 的做法不同 ——
- *    因为 IM 服务端完全不需要云崽运行时。
- */
-const NEEDED = [
-  'server-im/camp-im-server.js',
-  'server-im/lib/xxtea.js'
-]
 
 /* ------------------------------------------------------------ 小工具 */
 
@@ -73,19 +59,40 @@ function cfg () {
   }
 }
 
-/** 分发服务的地址 + 令牌（观战和营地消息共用同一套） */
-function distConfig () {
-  const c = cfg()
-  return {
-    url: normalizeBase(c.distUrl),
-    token: String(c.distToken || '').trim()
+/** 本机平台 → 三元组。不支持时把错误原文交给调用方去回话 */
+function target () {
+  try {
+    return { ok: true, target: detectTarget() }
+  } catch (error) {
+    return { ok: false, message: error.message }
   }
 }
 
-/** 服务端在哪个端口：从配置的服务地址里抠，抠不到按默认 */
-function serverPort () {
-  const m = String(cfg().campImApiUrl || '').match(/:(\d+)/)
-  return m ? Number(m[1]) : DEFAULT_PORT
+/** 目录已经存在、但看不出是我们的东西 → 拒绝动它 */
+function looksForeign () {
+  const dir = serverDir(KIND)
+  if (!fs.existsSync(dir)) return false
+  const bin = binPath(KIND)
+  const hasState = fs.existsSync(path.join(dir, '.gok-native.json'))
+  const hasLegacy = fs.existsSync(path.join(dir, LEGACY_ENTRY))
+  return !hasState && !hasLegacy && !(bin && fs.existsSync(bin))
+}
+
+/** 日志最后几行拼成一段。没有日志返回空串 */
+function logTailText (n = 12) {
+  return readLogTail(KIND, n).join('\n')
+}
+
+function fmtBytes (n) {
+  return n ? `${(n / 1024 / 1024).toFixed(1)} MB` : '大小未知'
+}
+
+function binSize (file) {
+  try {
+    return fs.statSync(file).size
+  } catch {
+    return 0
+  }
 }
 
 /* ------------------------------------------------------------ 插件 */
@@ -94,7 +101,7 @@ export class CampImDeploy extends plugin {
   constructor () {
     super({
       name: '王者营地消息运维',
-      dsc: '部署 / 查看营地消息服务端',
+      dsc: '部署 / 查看营地消息服务端（原生二进制，跟着机器人进程）',
       event: 'message',
       // ⚠️ 必须是负的：`#营地消息` 那条规则是精确匹配 `^#营地消息$`，
       //    `#营地消息部署` 不会被它吃掉，但保险起见和 watchDeploy 保持一致。
@@ -104,6 +111,8 @@ export class CampImDeploy extends plugin {
         // （群友装了这个插件之后，在他自己那台机器人上就是主人）
         { reg: '^#营地消息接入\\s+(\\S+)\\s+(\\S+)$', fnc: 'connect', permission: 'master' },
         { reg: '^#营地消息部署$', fnc: 'deploy', permission: 'master' },
+        // 部署是幂等的（版本没变不重下）。二进制坏了、或者想强刷时用这条
+        { reg: '^#营地消息重装$', fnc: 'reinstall', permission: 'master' },
         { reg: '^#营地消息服务$', fnc: 'status', permission: 'master' }
       ]
     })
@@ -120,155 +129,150 @@ export class CampImDeploy extends plugin {
     const m = /^#营地消息接入\s+(\S+)\s+(\S+)$/.exec(String(e.msg || '').trim())
     if (!m) return e.reply('格式：#营地消息接入 <地址> <令牌>', shouldQuote())
 
-    const url = normalizeBase(m[1])
+    const rawUrl = m[1].trim()
     const token = m[2].trim()
 
-    if (!/^https?:\/\//i.test(url)) {
+    if (!/^https?:\/\//i.test(rawUrl)) {
       return e.reply('地址要以 http:// 或 https:// 开头', shouldQuote())
     }
     if (token.length < 20) {
       return e.reply('令牌看着不对（太短了）。' + GROUP_HINT, shouldQuote())
     }
 
-    const probe = await fetchPackageMeta({ name: PKG_NAME, url, token })
+    // 平台先看：macOS / arm32 在这台机器上根本装不了
+    const t = target()
+    if (!t.ok) return e.reply(`❌ ${t.message}`, shouldQuote())
+
+    const probe = await fetchLatest(KIND, t.target, { url: rawUrl, token })
     if (!probe.ok) {
       return e.reply(
-        `连不上分发服务：${probe.message}\n` +
-        '地址和令牌都没错的话，' + GROUP_HINT,
+        `连不上分发服务：${probe.message}\n地址和令牌都没错的话，${GROUP_HINT}`,
         shouldQuote()
       )
     }
 
-    Config.modify('config', 'distUrl', url)
+    // ⚠️ 同 watchDeploy：写 `shareApiUrl` + `distToken`（三套共用一个令牌）
+    Config.modify('config', 'shareApiUrl', rawUrl.replace(/\/+$/, ''))
     Config.modify('config', 'distToken', token)
-    logger.mark(`[${PluginName}] 已接入分发服务：${url}`)
+    logger.mark(`[${PluginName}] 已接入分发服务：${safeUrl(rawUrl)}`)
 
     return this.deploy(e, { adopted: true })
   }
 
   /* -------------------------------------------------------- 部署 */
 
+  /** `#营地消息部署`：版本没变就不重下，只重启 */
   async deploy (e, { adopted = false } = {}) {
-    if (!pm2Bin()) {
-      return e.reply(
-        '没找到 pm2，先装一个再部署：npm i -g pm2\n' +
-        '（装完如果还报找不到，重启一下云崽让它认出新的 PATH）',
-        shouldQuote()
-      )
-    }
+    return this.installAndStart(e, { adopted, force: false })
+  }
 
-    const { url, token } = distConfig()
+  /** `#营地消息重装`：强制重新下载安装 */
+  async reinstall (e) {
+    return this.installAndStart(e, { adopted: false, force: true })
+  }
+
+  async installAndStart (e, { adopted = false, force = false } = {}) {
+    const t = target()
+    if (!t.ok) return e.reply(`❌ ${t.message}`, shouldQuote())
+
+    const { url, token } = readDistConfig()
     if (!url || !token) {
       return e.reply(
-        adopted
-          ? '配置没写进去，重发一次试试'
-          : `还没接入分发服务。${GROUP_HINT}`,
+        adopted ? '配置没写进去，重发一次试试' : `还没接入分发服务。${GROUP_HINT}`,
         shouldQuote()
       )
     }
 
-    // 同名进程但不是我们起的 —— 别去碰它，只说清楚（见文件头第 1 条规矩）
-    const running = pm2Proc(PROC_NAME)
-    if (running && !isOurProcess(running, SERVER_DIR)) {
-      return e.reply([
-        `有个叫 ${PROC_NAME} 的 pm2 进程，但跑的不是本插件的营地消息服务，没有动它。`,
-        `（它的目录是 ${running.pm2_env?.pm_cwd || '未知'}）`
-      ].join('\n'), shouldQuote())
-    }
-
-    // 认不出是我们的目录 → 拒绝动它（见文件头第 2 条规矩）
-    const hasState = fs.existsSync(path.join(SERVER_DIR, STATE_FILE))
-    if (fs.existsSync(SERVER_DIR) && !fs.existsSync(ENTRY_FILE) && !hasState) {
+    if (looksForeign()) {
       return e.reply(
-        `${path.relative(YunzaiRoot, SERVER_DIR)} 已经存在，但里面没有 camp-im-server.js —— ` +
+        `${path.relative(YunzaiRoot, serverDir(KIND))} 已经存在，但里面没有 gok-im —— ` +
         '看不出是本插件的目录，不敢动它。确认没用了就手动删掉再部署',
         shouldQuote()
       )
     }
 
-    const restarting = Boolean(running)
+    const before = await serviceStatus(KIND)
+    const restarting = before.running || before.alive
+
     await e.reply(
-      restarting
-        ? '正在更新营地消息服务…'
-        : '正在部署营地消息服务（要从分发服务下载代码），几十秒就好…',
+      force
+        ? '正在重新安装营地消息服务（强制重新下载，几十秒就好）…'
+        : restarting
+          ? '正在更新营地消息服务…'
+          : '正在部署营地消息服务（要从分发服务下载二进制），几十秒就好…',
       shouldQuote()
     )
 
     try {
-      // 老布局遗留：以前是 git 浅克隆，现在不用 git 了，把 .git 清掉免得困惑
-      const oldGit = path.join(SERVER_DIR, '.git')
+      // 老布局遗留的 .git（以前是浅克隆）。不删它也不会用，清掉免得困惑
+      const oldGit = path.join(serverDir(KIND), '.git')
       if (fs.existsSync(oldGit)) {
         try {
           fs.rmSync(oldGit, { recursive: true, force: true })
-          logger.mark(`[${PluginName}] 清掉旧的 .git（服务端代码现在从分发服务下载）`)
+          logger.mark(`[${PluginName}] 清掉旧的 .git（服务端现在是原生二进制）`)
         } catch (error) {
           logger.warn(`[${PluginName}] 清旧 .git 失败（不影响部署）：${error?.message || error}`)
         }
       }
 
-      const installed = await installPackage({
-        name: PKG_NAME,
+      const installed = await installNative({
+        name: KIND,
+        destDir: serverDir(KIND),
         url,
         token,
-        destDir: SERVER_DIR,
-        entry: 'camp-im-server.js',
+        force,
         logger
       })
       if (!installed.ok) {
         throw new Error(`${installed.message}\n如果地址令牌没问题，${GROUP_HINT}`)
       }
 
-      const missing = NEEDED.filter(f => !fs.existsSync(path.join(PluginPath, f)))
-      if (missing.length) {
-        throw new Error(`服务端文件不齐，缺：${missing.join('、')}`)
+      const bin = binPath(KIND, installed.target)
+      if (!bin || !fs.existsSync(bin)) {
+        throw new Error(`装完找不到二进制：${bin ? path.relative(PluginPath, bin) : '（平台不支持）'}`)
       }
 
-      const startup = restarting
-        ? pm2(['restart', PROC_NAME, '--update-env'], { timeout: 60000 })
-        : pm2([
-            'start', ENTRY_FILE,
-            '--name', PROC_NAME,
-            '--interpreter', 'node',
-            '--cwd', SERVER_DIR
-          ], { timeout: 60000 })
-
-      if (!startup.ok) {
-        throw new Error(`pm2 ${restarting ? '重启' : '启动'}失败：${startup.err || startup.out || '未知原因'}`)
+      const stopped = await stopService(KIND, { logger })
+      if (!stopped.ok) {
+        throw new Error(stopped.message || '旧的营地消息服务停不下来，先手动处理一下再试')
       }
 
-      const saved = pm2(['save'], { timeout: 30000 })
-      if (!saved.ok) logger.warn(`[${PluginName}] pm2 save 失败，开机自启可能没生效：${saved.err || saved.out}`)
+      const started = startService(KIND, { logger })
+      if (!started.ok) throw new Error(started.message)
 
-      const port = serverPort()
-      const status = await waitStatus(port)
-      if (!status) {
-        const logs = pm2(['logs', PROC_NAME, '--lines', '15', '--nostream'], { timeout: 20000 })
-        logger.error(`[${PluginName}] 营地消息服务起了但状态接口不通：${logs.out || logs.err}`)
-        throw new Error('进程起了但状态接口没通，日志在 pm2 里，先发 #营地消息服务 看看')
+      const port = servicePort(KIND)
+      const health = await waitStatus(port, '/api/status', 25000)
+      if (!health) {
+        const tail = logTailText()
+        logger.error(`[${PluginName}] 营地消息服务起了但状态接口不通：\n${tail}`)
+        throw new Error(
+          `服务进程起来了（PID ${started.pid}）但状态接口没通，日志最后几行：\n${tail || '（日志是空的）'}`
+        )
       }
 
-      resetPm2Cache()
       logger.mark(
         `[${PluginName}] 营地消息服务已${restarting ? '重启' : '部署'}：127.0.0.1:${port}` +
-        `（${SERVER_DIR}，版本 ${String(installed.sha).slice(0, 8)}${installed.updated ? '' : '，已是最新'}）`
+        `（${serverDir(KIND)}，版本 ${installed.sha}${installed.updated ? '' : '，已是最新'})`
       )
 
-      const online = (status.clients || []).filter(c => c.state === 'online').length
-      const total = (status.clients || []).length
+      const clients = health.clients || []
+      const online = clients.filter(c => c.state === 'online').length
       const lines = [
         `✅ 营地消息服务${restarting ? '已更新' : '部署好了'}`,
         '',
-        `进程：${PROC_NAME}（pm2 托管，开机自启）`,
-        `端口：${port}`,
-        `账号：${online}/${total} 在线`
+        `进程：PID ${started.pid}（跟着机器人走，不保活、不开机自启）`,
+        // 消息服务是纯本机后端（插件每 campImPollMs 轮询它），**不该对外**
+        `监听：${bindSummary(KIND)} —— 这个是本机后端，不用对外`,
+        `版本：${installed.sha}`,
+        `账号：${online}/${clients.length} 在线`
       ]
 
-      if (!total) {
-        lines.push('', '还没有可用的营地账号\n发 #营地wx全局登录 扫码添加')
+      if (!clients.length) {
+        lines.push('', '还没有可用的营地账号', '发 #营地wx全局登录 扫码添加')
       }
 
       if (!installed.updated && restarting) {
-        lines.push('', '代码本来就是最新的，只重启了一遍。')
+        lines.push('', '版本本来就是最新的，只重启了一遍。')
       }
 
       lines.push('', '看状态：发 #营地消息')
@@ -276,42 +280,82 @@ export class CampImDeploy extends plugin {
       return e.reply(lines.join('\n'), shouldQuote())
     } catch (error) {
       logger.error(`[${PluginName}] 部署营地消息服务失败：${error?.stack || error}`)
-      return e.reply(`❌ 部署失败：${error?.message || error}`, shouldQuote())
+      return e.reply(
+        `❌ 部署失败：${error?.message || error}\n\n（旧的服务和旧的二进制都没有被动过）`,
+        shouldQuote()
+      )
     }
   }
 
   /* -------------------------------------------------------- 状态 */
 
   async status (e) {
-    const proc = pm2Proc(PROC_NAME)
-    const port = serverPort()
-    const lines = ['📨 营地消息服务']
-
-    if (!proc) {
-      lines.push('', '没在跑', `发 #营地消息部署 装一个（${GROUP_HINT}）`)
-      return e.reply(lines, shouldQuote())
-    }
-    if (!isOurProcess(proc, SERVER_DIR)) {
-      lines.push('', `有个叫 ${PROC_NAME} 的进程，但不是本插件起的，没有动它`)
-      return e.reply(lines, shouldQuote())
+    const t = target()
+    if (!t.ok) {
+      return e.reply(['📨 营地消息服务', '', `❌ ${t.message}`].join('\n'), shouldQuote())
     }
 
-    lines.push('', `进程：${proc.pm2_env?.status || '未知'}`)
-    lines.push(`已跑：${fmtUptime(Date.now() - (proc.pm2_env?.pm_uptime || 0))}`)
-    const restarts = proc.pm2_env?.restart_time
-    if (restarts) lines.push(`重启次数：${restarts}`)
-    lines.push(`端口：${port}`)
+    const st = await serviceStatus(KIND)
+    const lines = ['📨 营地消息服务', '']
 
-    const status = await probeStatus(port)
-    if (!status) {
-      lines.push('', '⚠️ 状态接口不通，先看看 pm2 日志')
-    } else {
-      const clients = status.clients || []
-      const online = clients.filter(c => c.state === 'online').length
-      lines.push(`账号：${online}/${clients.length} 在线`)
-      if (status.queue) lines.push(`待处理：${status.queue.lastId || 0} 条`)
+    if (st.legacyJs && !st.installed) {
+      lines.push(`这台装的是**老的 JS 服务**（server-im/${LEGACY_ENTRY}）—— 它已经不再被启动，`)
+      lines.push('二进制版本才是现在的服务端。发 #营地消息部署 换过来（旧文件不会删）。')
+      return e.reply(lines.join('\n'), shouldQuote())
     }
 
-    return e.reply(lines, shouldQuote())
+    if (!st.installed) {
+      lines.push('服务端：还没装', '', `发 #营地消息部署 装一个（${GROUP_HINT}）`)
+      return e.reply(lines.join('\n'), shouldQuote())
+    }
+
+    lines.push(`服务端：${st.version || '（版本未知）'}`)
+    lines.push(`平台：${st.target}`)
+    lines.push(`二进制：${path.relative(YunzaiRoot, st.binary)}（${fmtBytes(binSize(st.binary))}）`)
+    lines.push(
+      st.running
+        ? `进程：在跑（PID ${st.pid}，已跑 ${fmtUptime(st.uptimeMs)}）`
+        : '进程：没在跑'
+    )
+    lines.push(`监听：${bindSummary(KIND)} —— 这个是本机后端，不用对外`)
+
+    if (!st.alive) {
+      lines.push(
+        st.running
+          ? '状态接口：没响应（进程在但连不上，多半是租约没换到或被吊销了）'
+          : '状态接口：没响应（进程不在）'
+      )
+      const tail = logTailText()
+      if (tail) lines.push('', '日志最后几行：', tail)
+      else lines.push('', `日志还是空的：${path.relative(YunzaiRoot, logFile(KIND))}`)
+      lines.push('', '重起一次：#营地消息部署（版本没变只重启，不重下）')
+      return e.reply(lines.join('\n'), shouldQuote())
+    }
+
+    const s = st.status
+    const clients = s.clients || []
+    const online = clients.filter(c => c.state === 'online').length
+    lines.push(`账号：${online}/${clients.length} 在线`)
+    if (s.queue) lines.push(`待处理：${s.queue.lastId || 0} 条`)
+
+    // 只提示，不自动更新
+    const up = await checkUpdate(KIND)
+    if (up.ok && up.hasNew) {
+      lines.push('', `⬆️ 服务器上有新版本 ${up.sha}（这台在跑 ${up.current}）`, '要更新就发 #营地消息部署')
+    } else if (!up.ok && up.message) {
+      lines.push('', `（查版本失败：${up.message}）`)
+    }
+
+    return e.reply(lines.join('\n'), shouldQuote())
   }
 }
+
+// 启动后接管已经装好的服务：模块顶层排一次，**不放 constructor**。
+// Yunzai 的 loader 每收到一条消息都会给每个 plugin 类 new 一个实例，
+// 写在 constructor 里等于每条消息都 spawn 一次（apps/cacheManager.js 有同一段教训）。
+// 只拉起已装的，不下载、不查版本；没装就静默跳过。
+setTimeout(() => {
+  ensureService(KIND, { logger }).catch(error => {
+    logger.debug(`[${PluginName}] 营地消息服务自动接管跳过：${error?.message || error}`)
+  })
+}, 20 * 1000).unref?.()

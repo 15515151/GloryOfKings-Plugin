@@ -203,7 +203,32 @@ export class CampIm extends plugin {
     const lines = ['营地消息服务']
     const clients = res.clients || []
     const online = clients.filter(c => c.state === 'online').length
-    lines.push(`\n账号 ${online}/${clients.length} 在线`)
+
+    // ⚠️ 「N/M 在线」数的是**正在收消息的连接**，不是账号池里的号。
+    //    扫过的全局账号默认不在收消息名单里（见 utils/campImStore.js 的 isAccountEnabled），
+    //    所以 0/0 很可能意味着「有好几个号，但一个都没开收」。
+    //    不把这层说清楚，0/0 会被当成故障（真踩过）。
+    const withAuth = authStore.listAccounts().filter(a => a?.userId && a?.userSig)
+    const poolCount = withAuth.length
+    lines.push(`\n账号 ${online}/${clients.length} 在线（正在收消息的）`)
+
+    // 「登录过的号」和「收消息名单」不是一个口径：清单里只有全局账号
+    // （见 authStore.listGlobalAccountsByOwner 的 isGlobalDefault 判据），
+    // 所以会出现「8 个登录过、#营地消息开 只收了 7 个」这种落差（真踩过）。
+    // 这里把不在名单里的号**点名**，免得用户只能靠数数怀疑自己。
+    const notInList = withAuth.filter(a => !store.isInImList(a.userId))
+
+    // ⚠️ 关键：这 N 个号**不一定都能用 #营地消息开 开**。
+    //    #营地消息开 走 listGlobalAccountsByOwner，只看全局账号（isGlobalDefault）；
+    //    没标成全局的号（比如绑定流程没走完的那个）只能在锅巴侧边栏「＋新增」里挑。
+    //    不给这个区分，用户会照着提示发 #营地消息开、然后发现数字没变（真踩过）。
+    const toggleableIds = new Set(
+      authStore
+        .listGlobalAccountsByOwner(String(e.user_id || ''), { includeOrphan: Boolean(e.isMaster) })
+        .map(x => String(x.userId))
+    )
+    const toggleable = notInList.filter(a => toggleableIds.has(String(a.userId)))
+    const sidebarOnly = notInList.filter(a => !toggleableIds.has(String(a.userId)))
 
     // 只列有归属人的（没归属的号不推消息，列出来只会让人困惑）
     const shown = clients.filter(c => ownerOf(c.userId))
@@ -213,21 +238,42 @@ export class CampIm extends plugin {
         const mark = c.state === 'online' ? '🟢' : '⚪'
         lines.push(`${mark} ${c.nickname || c.userId}`)
       }
+    } else if (poolCount) {
+      // 有号，只是没开收 —— 这条文案才指向正确的下一步。
+      // 注意分两种：能被 #营地消息开 开关的（全局号）和只能在侧边栏逐个加的，
+      // 给错指令用户会白试一次。
+      lines.push('\n还没有号在收消息')
+      lines.push(
+        toggleable.length
+          ? '扫过的号默认只用来查询，要收消息得自己开：发 #营地消息开'
+          : '要收消息去锅巴侧边栏「营地消息」页面，用「＋新增」挑号'
+      )
     } else {
-      lines.push('\n还没有带归属人的营地账号\n发 #营地wx全局登录 扫码添加')
+      lines.push('\n还没有营地账号\n发 #营地wx全局登录 扫码添加')
     }
 
-    const pending = Number(res.queue?.lastId || 0) - store.getCursor()
+    // ⚠️ 待处理条数用 `queue.length`（服务端就是当前积压条数）。
+    //    这里原先写的是 `queue.lastId - 游标`：lastId 是**消息序号**
+    //    （从 `MsgSeq::now_millis()` 起步的毫秒值），跟条数不是一个量纲，
+    //    于是在「一个号都没在收」时显示成「有 1789905861893 条消息待处理」。
+    const pending = Number(res.queue?.length || 0)
     if (pending > 0) lines.push(`\n有 ${pending} 条消息待处理`)
 
-    // ⭐ 登录了、但不在收消息名单里的号：提醒一句 + 给一条能照着发的指令。
+    // ⭐ 登录了、但不在收消息名单里的号：按「能不能用指令开」分开说。
     //    默认不收是刻意的（扫进来的全局账号大多只拿来轮询查询），但不提醒的话
     //    用户会以为「扫完就该收消息」，发现收不到也不知道为什么。
-    const idle = authStore.listAccounts()
-      .filter(a => a?.userId && a?.userSig && !store.isInImList(a.userId) && ownerOf(a.userId))
-    if (idle.length) {
-      lines.push('', `你还有 ${idle.length} 个登录过的号没收消息`)
-      lines.push('要收就发 #营地消息开')
+    if (notInList.length) {
+      lines.push('', `你还有 ${notInList.length} 个登录过的号没收消息`)
+      if (toggleable.length) {
+        lines.push(`· 其中 ${toggleable.length} 个发 #营地消息开 就能开`)
+      }
+      if (sidebarOnly.length) {
+        // 点名：不点名的话用户只能一个个试，或者以为插件坏了
+        lines.push(
+          `· 另有 ${sidebarOnly.length} 个没标成全局账号（${sidebarOnly.map(a => a.userId).join('、')}），` +
+          '要收得去锅巴侧边栏「营地消息」页面用「＋新增」挑'
+        )
+      }
     }
 
     return e.reply(lines, shouldQuote())
@@ -268,10 +314,22 @@ export class CampIm extends plugin {
     // 立刻同步给服务端（挂上/停掉长连接），不用等下一轮轮询
     await syncAccounts()
 
-    return e.reply(
-      on ? `已开始收 ${mine.length} 个号的消息` : `已停止收 ${mine.length} 个号的消息`,
-      shouldQuote()
-    )
+    const lines = [
+      on ? `已开始收 ${mine.length} 个号的消息` : `已停止收 ${mine.length} 个号的消息`
+    ]
+
+    // ⚠️ 「7 个」和用户以为的「8 个」对不上时，得当场解释清楚，
+    //    否则只能靠数数怀疑自己。判据是 isGlobalDefault（见 listGlobalAccountsByOwner）：
+    //    登录过的号里，没标成全局的那些这条指令管不着，只能去侧边栏逐个加。
+    const usable = authStore.listAccounts().filter(a => a?.userId && a?.userSig)
+    const rest = usable.filter(a => !mine.includes(String(a.userId)))
+    if (rest.length) {
+      lines.push('', `（你登录过的号一共 ${usable.length} 个，另有 ${rest.length} 个没标成全局账号，` +
+        `#营地消息开 管不着：${rest.map(a => a.userId).join('、')}）`)
+      lines.push('要收它们的消息，去锅巴侧边栏「营地消息」页面用「＋新增」挑')
+    }
+
+    return e.reply(lines.join('\n'), shouldQuote())
   }
 
   /** `#营地回复 <营地号> <内容>` */

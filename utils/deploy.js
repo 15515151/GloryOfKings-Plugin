@@ -1,33 +1,25 @@
 /**
- * 服务端代码分发的**客户端**：从主人的分发服务下载 tar.gz、解开、记台账。
+ * 服务端分发相关的**无协议工具箱**：地址规范化、tar.gz 解包、探活。
  *
- * ## 为什么不用 git 了
+ * ## 这个文件现在是什么
  *
- * 服务端代码原来住在仓库的三个分支上（`server` / `watch-server` / `im-server`），
- * 靠 `git clone` 拉。现在改成从**主人自己的服务器**发（凭 token），好处：
- *   · 代码不再出现在任何公开仓库里
- *   · 主人能按人发 token、单独吊销
- *   · 群友不用装 git
+ * P3-B 之后，分发协议（设备号 / `/latest` / `/download` / `/key` / AES 解密 /
+ * 原子落二进制）都搬到了 `utils/dist.js`；子进程生命周期在 `utils/service.js`。
+ * 剩在这里的是两者都要用、而且和「下的是什么」无关的东西。
+ *
+ * 早先这里还负责「下明文 tar.gz → 解到 server/ → 写台账」，那条路已经删了：
+ * 现在云端只发 `kind=native` 的密文包，明文包也不会再出现。
  *
  * ## 解压为什么自己写
  *
  * 插件不能随便加依赖（别人装插件时不会 `npm install`）。好在 Node 内置的 `zlib`
  * 能解 gzip，而 tar 的格式简单到能手写：每个条目一个 512 字节头 + 数据（按 512 对齐）。
  *
- * ⚠️⚠️ **`git archive` 打出来的是 pax 格式，第一个条目是 `typeflag='g'` 的
- * `pax_global_header`**（实测：size=52）。不跳过它的话，那 52 字节会被当成下一个
- * 条目的头，整个包解出来全是垃圾。`typeflag='x'`（pax 扩展头，真实路径在数据段里）
- * 和 `'L'`（GNU 长文件名）同理 —— 现在三个分支的路径都没超 100 字节，暂时遇不到，
- * 但兜底必须写，不然将来加个深目录就静默解错。
- *
- * ## 数据文件为什么不会被冲掉
- *
- * 两层保险：
- *   1. `git archive` 只打**被跟踪**的文件，而服务端分支的 `.gitignore` 把 `data/*`
- *      和 `.env` 都挡住了 —— 它们根本不在包里。
- *   2. 解压时 `exclude` 再挡一道（首段命中就跳过）。
- * 而且观战的数据本来就在 `<插件>/data/watch/`、代码在 `<插件>/server/`，
- * 两者不重叠，怎么更新都碰不到。
+ * ⚠️⚠️ **服务端封装原生包用的是手写的 ustar 头**（`src/native.mjs` 的 `tarHeader`），
+ * 但 `git archive` 打出来的 JS 包是 pax 格式，第一个条目是 `typeflag='g'` 的
+ * `pax_global_header`。不跳过它的话，那 52 字节会被当成下一个条目的头，整个包解出来
+ * 全是垃圾。`typeflag='x'`（pax 扩展头，真实路径在数据段里）和 `'L'`（GNU 长文件名）
+ * 同理 —— 现在两个包都用不到，但兜底必须留着，不然将来加个深目录就静默解错。
  */
 
 import fs from 'node:fs'
@@ -36,9 +28,6 @@ import zlib from 'node:zlib'
 
 /** 默认排除的路径首段：数据、凭证、依赖、旧 git 目录，一律不写 */
 export const DEFAULT_EXCLUDE = ['data', '.env', 'node_modules', '.git', 'config/config']
-
-/** 安装台账文件名（记「上次装的是哪个 sha、解出哪些文件」） */
-export const STATE_FILE = '.gok-pkg.json'
 
 /* ------------------------------------------------------------ 小工具 */
 
@@ -158,63 +147,6 @@ export function extractTarGz (buffer, destDir, { exclude = DEFAULT_EXCLUDE } = {
   return out
 }
 
-/* ------------------------------------------------------------ 台账 */
-
-/** 读安装台账。没有 / 读坏了都返回 null（当第一次装） */
-export function readInstallState (destDir) {
-  try {
-    const raw = fs.readFileSync(path.join(destDir, STATE_FILE), 'utf8')
-    const data = JSON.parse(raw)
-    return Array.isArray(data?.files) ? data : null
-  } catch {
-    return null
-  }
-}
-
-/** 写安装台账。失败只记日志不抛 —— 装都装完了，台账丢了最多下次多解一遍 */
-export function writeInstallState (destDir, state, logger) {
-  try {
-    fs.mkdirSync(destDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(destDir, STATE_FILE),
-      JSON.stringify(state, null, 2),
-      'utf8'
-    )
-    return true
-  } catch (error) {
-    logger?.warn?.(`[deploy] 写安装台账失败（不影响使用）：${error?.message || error}`)
-    return false
-  }
-}
-
-/**
- * 清理「上次有、这次没有」的文件。
- *
- * tar 解压天然做不到 `git reset --hard` 那种「删掉上游已删除的文件」，
- * 所以靠台账补上。**只删台账里记过的路径** —— 数据文件、`.git`、`node_modules`
- * 永远不会在台账里，所以永远碰不到。
- *
- * @returns {string[]} 实际删掉的文件
- */
-export function pruneRemoved (destDir, oldFiles, newFiles, logger) {
-  const keep = new Set(newFiles)
-  const removed = []
-  for (const rel of oldFiles || []) {
-    if (keep.has(rel)) continue
-    if (shouldSkip(rel, DEFAULT_EXCLUDE)) continue
-    const target = path.resolve(destDir, rel)
-    const root = path.resolve(destDir)
-    if (target !== root && !target.startsWith(root + path.sep)) continue
-    try {
-      fs.rmSync(target, { force: true })
-      removed.push(rel)
-    } catch (error) {
-      logger?.warn?.(`[deploy] 清理旧文件 ${rel} 失败：${error?.message || error}`)
-    }
-  }
-  return removed
-}
-
 /* ------------------------------------------------------------ 网络 */
 
 /** 分发服务地址规范化：去尾部斜杠，没写协议就补 http:// */
@@ -223,141 +155,6 @@ export function normalizeBase (url) {
   if (!s) return ''
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`
   return s
-}
-
-/**
- * 问服务器「这个包现在是什么版本」，不下载。
- * 任何失败都翻译成 `{ok:false, message}`，不抛。
- *
- * @returns {Promise<{ok: boolean, sha?: string, size?: number, sha256?: string, message?: string}>}
- */
-export async function fetchPackageMeta ({ name, url, token, timeout = 10000 } = {}) {
-  const base = normalizeBase(url)
-  if (!base) return { ok: false, message: '还没配分发服务地址' }
-  if (!token) return { ok: false, message: '还没配分发令牌' }
-
-  try {
-    const res = await fetch(`${base}/api/v1/packages/${encodeURIComponent(name)}/latest`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(timeout)
-    })
-
-    if (res.status === 401) return { ok: false, message: '令牌无效，找主人要一个新的' }
-    if (res.status === 403) return { ok: false, message: '令牌已被吊销，找主人要一个新的' }
-    if (res.status === 404) return { ok: false, message: `服务器上没有「${name}」这个包` }
-    if (!res.ok) return { ok: false, message: `服务器返回 ${res.status}` }
-
-    const data = await res.json().catch(() => null)
-    if (!data?.sha) return { ok: false, message: '服务器返回的内容看不懂' }
-    return { ok: true, sha: data.sha, size: data.size, sha256: data.sha256 }
-  } catch (error) {
-    const msg = error?.name === 'TimeoutError'
-      ? '连服务器超时'
-      : '连不上分发服务（检查地址和网络）'
-    return { ok: false, message: msg }
-  }
-}
-
-/**
- * 下载代码包到内存。观战包 ~100KB、消息包瘦身后几十 KB，进内存完全没问题。
- *
- * @returns {Promise<{ok: boolean, buffer?: Buffer, sha?: string, message?: string}>}
- */
-export async function downloadPackage ({ name, sha, url, token, timeout = 180000 } = {}) {
-  const base = normalizeBase(url)
-  if (!base) return { ok: false, message: '还没配分发服务地址' }
-
-  const query = sha ? `?sha=${encodeURIComponent(sha)}` : ''
-  try {
-    const res = await fetch(`${base}/api/v1/packages/${encodeURIComponent(name)}/download${query}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(timeout)
-    })
-
-    if (res.status === 401) return { ok: false, message: '令牌无效，找主人要一个新的' }
-    if (res.status === 403) return { ok: false, message: '令牌已被吊销，找主人要一个新的' }
-    if (res.status === 404) return { ok: false, message: `服务器上没有「${name}」这个包` }
-    if (!res.ok) return { ok: false, message: `下载失败（HTTP ${res.status}）` }
-
-    const buffer = Buffer.from(await res.arrayBuffer())
-    return { ok: true, buffer, sha: res.headers.get('x-gok-sha') || sha }
-  } catch (error) {
-    const msg = error?.name === 'TimeoutError'
-      ? '下载超时'
-      : '下载中断（检查网络）'
-    return { ok: false, message: msg }
-  }
-}
-
-/* ------------------------------------------------------------ 一站式安装 */
-
-/**
- * 查版本 → 比对本地 → 按需下载 → 解压 → 清旧文件 → 写台账。
- *
- * @param {object} opts
- * @param {string} opts.name      包名（`watch` / `im`）
- * @param {string} opts.url       分发服务地址
- * @param {string} opts.token     令牌
- * @param {string} opts.destDir   解到哪
- * @param {string} [opts.entry]   入口文件的相对路径，用来判断「装没装过」
- * @param {string[]} [opts.exclude]
- * @param {object} [opts.logger]
- * @returns {Promise<{ok: boolean, sha?: string, updated?: boolean, files?: string[], bytes?: number, message?: string}>}
- */
-export async function installPackage ({
-  name, url, token, destDir, entry, exclude = DEFAULT_EXCLUDE, logger
-} = {}) {
-  const meta = await fetchPackageMeta({ name, url, token })
-  if (!meta.ok) return { ok: false, message: meta.message }
-
-  const state = readInstallState(destDir)
-  const entryOk = entry ? fs.existsSync(path.join(destDir, entry)) : true
-
-  // 版本没变、文件也齐 → 什么都不做，让调用方直接去重启进程
-  if (state?.sha === meta.sha && entryOk) {
-    return { ok: true, sha: meta.sha, updated: false, files: state.files || [] }
-  }
-
-  const down = await downloadPackage({ name, sha: meta.sha, url, token })
-  if (!down.ok) return { ok: false, message: down.message }
-
-  let result
-  try {
-    result = extractTarGz(down.buffer, destDir, { exclude })
-  } catch (error) {
-    return { ok: false, message: `解压失败（包可能损坏）：${error?.message || error}` }
-  }
-
-  // ⚠️ 一个文件都没解出来 = 包不对（空包、被截断、格式变了）。
-  //    这时候**绝对不能往下走清理** —— 台账里记的旧文件会被当成「上游删掉的」
-  //    全部删光，等于把已装的服务端毁掉。
-  if (!result.files.length) {
-    return { ok: false, message: '包解开是空的，没敢动已装的文件' }
-  }
-
-  // 上游删掉的文件，靠台账补删
-  const removed = pruneRemoved(destDir, state?.files, result.files, logger)
-
-  writeInstallState(destDir, {
-    name,
-    sha: meta.sha,
-    files: result.files,
-    installedAt: new Date().toISOString()
-  }, logger)
-
-  logger?.mark?.(
-    `[deploy] ${name} 已更新到 ${String(meta.sha).slice(0, 8)}：` +
-    `${result.files.length} 个文件${removed.length ? `，清掉 ${removed.length} 个旧文件` : ''}`
-  )
-
-  return {
-    ok: true,
-    sha: meta.sha,
-    updated: true,
-    files: result.files,
-    bytes: result.bytes,
-    removed
-  }
 }
 
 /* ------------------------------------------------------------ 状态探测 */
@@ -374,7 +171,7 @@ export async function probeStatus (port, statusPath = '/api/status', timeout = 2
   }
 }
 
-/** 等它起来（pm2 拉起到真正监听之间有几百毫秒的空窗） */
+/** 等它起来（进程拉起后到真正监听之间有几百毫秒的空窗） */
 export async function waitStatus (port, statusPath = '/api/status', timeoutMs = 25000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -387,7 +184,7 @@ export async function waitStatus (port, statusPath = '/api/status', timeoutMs = 
 
 /** 毫秒 → 「N 小时 M 分」 */
 export function fmtUptime (ms) {
-  if (!ms || ms < 0) return '—'
+  if (!ms || ms < 0 || Number.isNaN(ms)) return '—'
   const hours = Math.floor(ms / 3600000)
   const minutes = Math.floor((ms % 3600000) / 60000)
   return hours ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`

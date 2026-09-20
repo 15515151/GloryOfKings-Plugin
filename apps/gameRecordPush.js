@@ -1402,7 +1402,7 @@ function readConfig () {
 }
 
 /**
- * 调观战服务（server/watch-server.js，pm2 名 gok-watch）。
+ * 调观战服务（server/ 下的原生二进制 gok-watch，跟着机器人进程走）。
  *
  * 盯梢要用它两件事：查「这个号是不是某个全局账号的好友」（`friendCampIds`）、
  * 记下开播坐标供 `#营地开播` 用。
