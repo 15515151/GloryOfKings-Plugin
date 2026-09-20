@@ -6,6 +6,8 @@
  * cursor: 123                      # 已处理到的最大消息 id（全局单调，防重启丢/重）
  * refs:                            # 引用回复映射：私信消息 id -> 营地会话信息
  *   "123456": { selfUserId, toUserId, toRoleId, fromRoleId, at }
+ * seen:                            # 已推消息的去重键 -> 记录时间（挡服务端重连补拉的重放）
+ *   "409420549:757502449344": 1789909982477
  * accounts:                        # ⭐ **收消息名单**：只有列在这儿的号才挂 ws 收消息
  *   "1580886057": true
  * ```
@@ -28,6 +30,15 @@ const REF_TTL_MS = 24 * 60 * 60 * 1000
 /** 引用映射最多留多少条 */
 const REF_MAX = 500
 
+/**
+ * 已推消息去重键的存活时间、最多留多少条。
+ *
+ * 服务端补拉重放的窗口就是「最近几条离线消息」，7 天远远够；
+ * 上限是防文件无限涨，1000 条约几十 KB。
+ */
+const SEEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const SEEN_MAX = 1000
+
 let cache = null
 
 function load () {
@@ -41,6 +52,7 @@ function load () {
   cache = {
     cursor: Number(raw.cursor) || 0,
     refs: (raw.refs && typeof raw.refs === 'object') ? { ...raw.refs } : {},
+    seen: (raw.seen && typeof raw.seen === 'object') ? { ...raw.seen } : {},
     accounts: (raw.accounts && typeof raw.accounts === 'object') ? { ...raw.accounts } : {},
     friendLists: (raw.friendLists && typeof raw.friendLists === 'object') ? { ...raw.friendLists } : {}
   }
@@ -111,6 +123,61 @@ export function getRef (msgId) {
   if (!v) return null
   if (Date.now() - (v.at || 0) > REF_TTL_MS) return null
   return v
+}
+
+/**
+ * 一条营地消息的去重键（**可能两个**，命中任意一个都算推过）。
+ *
+ * ⚠️ 为什么用**游戏消息 id**（`messageId`）而不是服务端队列序号 `id`：
+ *    服务端 ws 每次重连都会把离线消息重新补拉进队列、重新分配 `id`，但 `messageId` 不变。
+ *    游标只按 `id` 前进，挡不住这种重放。
+ *
+ * ⚠️ 为什么还带一个**内容指纹**：万一补拉重放时 `messageId` 也变了（不同版本的服务端
+ *    行为没保证），单靠它就会漏；内容指纹用「发信人 + 游戏时间戳 + 正文」，同一条消息重放
+ *    时这三个都不变。两条键同时查，命中哪条都算重复。
+ *
+ * @param {object} msg 服务端返回的消息对象
+ * @returns {string[]}
+ */
+export function messageKeys (msg) {
+  const self = String(msg?.selfUserId ?? '')
+  const mid = msg?.messageId || msg?.raw?.messageID || ''
+  const keys = []
+  if (mid) keys.push(`${self}:${mid}`)
+  keys.push(`${self}:${msg?.fromUserId ?? ''}:${msg?.time ?? ''}:${msg?.text ?? ''}`)
+  return [...new Set(keys)]
+}
+
+/**
+ * 这条消息之前推过没有。
+ *
+ * ⚠️⚠️ 去重键用的是**游戏消息 id**（服务端返回的 `messageId`），不是服务端队列序号 `id`——
+ *    服务端每次 ws 重连都会把离线消息**重新补拉进队列**，同一条消息会拿到一个**新的**
+ *    `id`，但 `messageId` 不变。游标只按 `id` 前进，挡不住这种重放
+ *    （2026-09-20 实测：一次补拉 4 条，3 秒内把同一个号收到的「dsh测试1155」推了两遍；
+ *    之后每隔十来秒重连一次，同样的几条又整批再推一轮）。
+ *
+ * 键由 `messageKeys` 拼，这里只负责查。
+ */
+export function hasSeenMessage (key) {
+  const k = String(key || '')
+  if (!k) return false
+  return Object.prototype.hasOwnProperty.call(load().seen, k)
+}
+
+/** 记下这条消息推过了（落盘，扛重启）；顺带清理过期 + 限量 */
+export function markSeenMessage (key) {
+  const k = String(key || '')
+  if (!k) return
+  const c = load()
+  if (!c.seen || typeof c.seen !== 'object') c.seen = {}
+  c.seen[k] = Date.now()
+
+  const now = Date.now()
+  const entries = Object.entries(c.seen).filter(([, v]) => now - (Number(v) || 0) < SEEN_TTL_MS)
+  entries.sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
+  c.seen = Object.fromEntries(entries.slice(0, SEEN_MAX))
+  save()
 }
 
 /**
@@ -232,6 +299,9 @@ export default {
   resetCursor,
   addRef,
   getRef,
+  messageKeys,
+  hasSeenMessage,
+  markSeenMessage,
   isAccountEnabled,
   setAccountEnabled,
   getAccountSwitches,

@@ -83,10 +83,19 @@ async function pollOnce () {
 
     const list = res.messages || []
     for (const msg of list) {
-      try {
-        await dispatch(msg)
-      } catch (e) {
-        logger.error(`[营地消息] 处理消息 ${msg?.id} 出错：${e?.message || e}`)
+      const keys = store.messageKeys(msg)
+      if (keys.some(k => store.hasSeenMessage(k))) {
+        // ⚠️ 服务端 ws 每次重连都会把离线消息重新补拉进队列、分配**新的服务端 id**，
+        //    游标（只按 id 前进）挡不住；只能靠游戏消息 id / 内容指纹去重。
+        logger.debug?.(`[营地消息] 跳过服务端重放的重复消息 ${keys[0]}`)
+      } else {
+        // 先记后发：同一条消息只尝试推一次；推失败也别让下一次补拉再推，否则会刷屏
+        for (const k of keys) store.markSeenMessage(k)
+        try {
+          await dispatch(msg)
+        } catch (e) {
+          logger.error(`[营地消息] 处理消息 ${msg?.id} 出错：${e?.message || e}`)
+        }
       }
       // ⭐ 无论成功失败都推进游标 —— 否则一条坏消息会永远卡住后面所有消息
       store.setCursor(msg.id)
@@ -157,6 +166,35 @@ async function syncAccounts () {
     return { ok: true, started: toStart, stopped: toStop }
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
+  }
+}
+
+/**
+ * 启动时把「服务端队列里、游标已经越过」的消息记成已推。
+ *
+ * ⚠️ 为什么需要：游标停在 lastId 上，正常情况下这些旧消息不会再拉出来；
+ *    但 ws 一重连，服务端会补拉离线消息、给它们分配**新的** id，于是又会被当新消息推一遍。
+ *    启动时先记上，重启后即使马上重连补拉也不会重推。
+ *
+ * ⚠️ 只在「服务端 id 没有回退」时播种：服务端重启后 id 从 1 重来，
+ *    这时不能拿旧的大游标去判断，否则会把待处理的补拉消息全吞掉（见 pollOnce 的复位逻辑）。
+ */
+async function seedSeenFromQueue () {
+  try {
+    const res = await client.getMessages(0)
+    if (!res?.ok) return
+    const cursor = store.getCursor()
+    if (Number(res.lastId) < cursor) return
+    let n = 0
+    for (const msg of (res.messages || [])) {
+      if (Number(msg.id) <= cursor) {
+        for (const k of store.messageKeys(msg)) store.markSeenMessage(k)
+        n++
+      }
+    }
+    if (n) logger.debug?.(`[营地消息] 启动时记下 ${n} 条已推过的队列消息`)
+  } catch (e) {
+    logger.debug?.(`[营地消息] 启动播种已推消息失败：${e?.message || e}`)
   }
 }
 
@@ -550,6 +588,8 @@ function bootstrap () {
       } else if (r.started?.length || r.stopped?.length) {
         logger.info(`[${PluginName}] 营地消息账号已同步：启动 ${r.started?.length || 0} 个，停止 ${r.stopped?.length || 0} 个`)
       }
+      // 先给「已经推过的旧消息」打标，别等 ws 重连补拉时又推一遍
+      await seedSeenFromQueue()
       startPolling()
     } catch (e) {
       logger.warn(`[${PluginName}] 营地消息启动失败：${e?.message || e}`)
