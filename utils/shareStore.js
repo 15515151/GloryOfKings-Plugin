@@ -142,11 +142,12 @@ export function readShareConfig () {
     const cfg = Config.getDefOrConfig('config') || {}
     return {
       enabled: cfg.shareEnabled === true,
+      // ⚠️ 地址和令牌都**只认新键**（`shareApiUrl` / `distToken`）—— 三套服务共用一个，
+      //    锅巴里也只有一个填写口。老键（`distUrl` / `shareToken`）由
+      //    `utils/migrateConfig.js` 在启动时搬过来并删掉，这里不再 `||` 回退
+      //    （以前回退还漏过一处：共享库读不到 `distUrl`，老机器误报「还没接入」）。
       apiUrl: String(cfg.shareApiUrl || '').trim().replace(/\/+$/, ''),
-      // ⚠️ 令牌**和观战/消息共用同一个**（`distToken`）—— 主人签发时是「代共享库签」的，
-      //    所以一个值两边都认。锅巴里也只填一处。
-      //    回退读老的 `shareToken`：合并之前配过的机器不用重新填。
-      token: String(cfg.distToken || cfg.shareToken || '').trim(),
+      token: String(cfg.distToken || '').trim(),
       // 远程管理用的钥匙（服务端 GOK_ADMIN_SECRET）。只有运维指令用它，
       // 和接入用的 token 是两码事，缺了只影响发令牌那些，不影响接入
       adminSecret: String(cfg.shareAdminSecret || '').trim()

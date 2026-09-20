@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { writeYamlFile } from './utils/yamlUtils.js'
 import { guardApps } from './utils/blackList.js'
-import { PluginName, PluginData } from './components/Path.js'
+import { PluginName, PluginData, Config } from './components/index.js'
+import { migrateConfigFile } from './utils/migrateConfig.js'
 import fs from 'node:fs/promises'
 import chalk from 'chalk'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -124,6 +125,27 @@ async function loadModules() {
 }
 
 await checkAndCreatePaths()
+
+// ⚠️⚠️ 配置迁移必须**夹在**这两步之间：
+//   · 在 checkAndCreatePaths 之后 —— 那时 config/config/ 已经存在（首次启动会从模板建一份）
+//   · 在 loadModules 之前     —— 任一 app 的 import 都可能读配置，晚一步就有人读到老键
+// 迁移是幂等的（没要改的就不写文件），失败也不拦启动。详见 utils/migrateConfig.js
+const migration = migrateConfigFile()
+if (migration.changed) {
+  // 迁移直接改了文件，而 Config 单例可能已经把老内容读进内存缓存 —— 清掉，
+  // 让下一次 getDefOrConfig 重新读盘（它是懒加载 + 按文件缓存）
+  if (migration.invalidate) {
+    try {
+      delete Config.config['config.config']
+      delete Config.config['default_config.config']
+    } catch {}
+  }
+  // ⚠️ 只打这一条。迁移模块自己不再打日志（否则同样的话在启动日志里出现两遍）
+  logger.mark(`[${PluginName}] 配置字段已迁移：${migration.actions.join('、')}`)
+} else if (migration.reason && migration.reason !== 'no-user-config') {
+  logger.warn(`[${PluginName}] 配置迁移跳过（${migration.reason}）`)
+}
+
 await loadModules()
 
 // 黑名单闸门：给所有 app 的方法统一套一层，名单里的人发王者指令一律不响应。

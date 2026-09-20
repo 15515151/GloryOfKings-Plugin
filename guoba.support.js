@@ -191,21 +191,30 @@ export function supportGuoba () {
           label: '服务端接入'
         },
         {
-          field: 'config.distUrl',
-          label: '分发服务地址',
-          bottomHelpMessage: '观战和营地消息的服务端代码从主人服务器上的「分发服务」下载（默认端口 6868），不再从 git 仓库拉。装观战/消息时发 #营地观战接入 <地址> <令牌> 会自动写这里。留空 = 还没接入，进群 972915804 找主人要。',
+          field: 'config.shareApiUrl',
+          label: '服务地址（三套共用这一个）',
+          bottomHelpMessage:
+            '**唯一的服务地址**：观战 / 营地消息按平台下发的原生二进制、以及营地ID共享库，' +
+            '三套用的都是它（合并之后只有一个端口，默认 8787，老的 6868 已退役）。' +
+            '要带 http:// 或 https://，必须走 HTTPS —— 下发包的解密密钥是明文过网的，' +
+            '明文 HTTP 下整套加密等于没做。' +
+            '装观战/消息时发 #营地观战接入 <地址> <令牌> 会写进这里；' +
+            '等价指令：#营地共享库地址 <地址>。留空 = 还没接入。' +
+            '⚠️ 老配置里的 distUrl / shareToken 等字段，插件启动时会自动把值搬到这里并把老字段删掉（见 utils/migrateConfig.js），不用你手动填。',
           component: 'Input',
           componentProps: {
-            placeholder: 'http://你的域名:6868'
+            placeholder: 'https://gok.example.com:442'
           }
         },
         {
           field: 'config.distToken',
-          label: '接入令牌',
+          label: '接入令牌（三套共用这一个）',
           bottomHelpMessage:
             '主人签发的令牌，**观战 / 营地消息 / 共享库 三套共用这一个** —— ' +
             '主人签发时是「代共享库签」的，所以一个值三边都认，不用分别填。' +
+            '服务端下发的是密文，密钥要用这个令牌去换，所以它同时是身份和门禁。' +
             '⚠️ 是凭证，等同密码，别往群里贴、也别把带它的配置截图发出去。' +
+            '⚠️ 锅巴里**只有这一个令牌口**（老配置里的 shareToken 启动时会被自动搬到这里并删掉）。' +
             '等价指令：#营地共享库令牌 <令牌>。',
           component: 'Input',
           componentProps: {
@@ -225,44 +234,18 @@ export function supportGuoba () {
           component: 'Switch'
         },
         {
-          field: 'config.shareApiUrl',
-          label: '共享库地址',
-          bottomHelpMessage:
-            '共享库服务端的地址，要带 http:// 或 https://。留空 = 不接入。' +
-            '等价指令：#营地共享库地址 <地址>。',
-          component: 'Input',
-          componentProps: {
-            placeholder: 'https://your-share.example.com'
-          }
-        },
-        {
           field: 'config.shareAdminSecret',
-          label: '共享库管理密钥（远程管理）',
+          label: '管理密钥（主人用，只有一个）',
           bottomHelpMessage:
-            '服务端 .env 里的 GOK_ADMIN_SECRET。库跑在别的机器或 Docker 上时，' +
-            '配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库。' +
-            '这个密钥能签发、吊销令牌，权限很大，别往群里贴。',
+            '服务端 .env 里的 GOK_ADMIN_SECRET，**合并之后只有这一个管理密钥**' +
+            '（老的 distAdminSecret 是个死键，已从面板移除）。' +
+            '库跑在别的机器或 Docker 上时，配上它就能用 #营地共享库发令牌 / 接入方 / 吊销 远程管库；' +
+            '本机部署了库时会自动读它的 .env，不用填。' +
+            '⚠️ 这个密钥能签发、吊销令牌，权限比接入令牌大得多，只收私聊、别往群里贴。' +
+            '用 #营地共享库管理密钥 <密钥> 设置。',
           component: 'Input',
           componentProps: {
             placeholder: '64 位十六进制（openssl rand -hex 32 生成）'
-          }
-        },
-        {
-          field: 'config.distAdminSecret',
-          label: '分发服务管理密钥（主人用）',
-          bottomHelpMessage: '签令牌 / 看接入方 / 吊销要用它。本机部署了分发服务时插件会自动读它的 .env，不用填；分发服务跑在别的机器上时才填。用 #营地分发管理密钥 <密钥> 设置（只收私聊）。',
-          component: 'Input',
-          componentProps: {
-            placeholder: '64 位十六进制'
-          }
-        },
-        {
-          field: 'config.distRepoUrl',
-          label: '分发服务代码仓库',
-          bottomHelpMessage: '部署分发服务时从哪个仓库拉代码（它的 dist 分支）。一般不用改，换成自己的私库时才要。',
-          component: 'Input',
-          componentProps: {
-            placeholder: '留空 = 用默认的私库'
           }
         },
         {
@@ -272,7 +255,7 @@ export function supportGuoba () {
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '观战要另跑一个后端进程（按平台分发的原生二进制，负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端接入」那一栏）。换端口改这里即可，不用重启云崽（端口走 GOK_WATCH_PORT 传给子进程，下次部署/重装起进程时生效）。填回环地址时插件会把子进程设成只监听本机：二进制默认绑 :: 双栈，IPv6 被禁的机器上会起不来；要放别处（反代直连）就填那个地址。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
@@ -294,7 +277,7 @@ export function supportGuoba () {
         {
           field: 'config.campImApiUrl',
           label: '营地消息服务地址',
-          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（按平台分发的原生二进制，给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端接入」那一栏）。换端口改这里即可，不用重启云崽（端口走 GOK_IM_PORT 传给子进程）。二进制坏了发 #营地消息重装 强制重下。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'
@@ -834,6 +817,8 @@ export function supportGuoba () {
         const campIm = getCampImSnapshot()
 
         return {
+          // 老字段（distUrl / shareToken …）在插件启动时已被 utils/migrateConfig.js
+          // 搬到新字段并删掉，所以这里直读就行，不需要再整形
           config: Config.getDefOrConfig('config'),
           auth: Config.getDefOrConfig('auth'),
           authPool: { accounts },
