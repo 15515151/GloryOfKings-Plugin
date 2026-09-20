@@ -44,6 +44,8 @@ const COPY_FILES = [
   'utils/safeStore.js',
   'utils/localBind.js',
   'utils/authStore.js',
+  // 营地消息的本地状态（test/campImDedup.test.mjs 用）
+  'utils/campImStore.js',
   // 配置迁移（test/migrateConfig.test.mjs 用）
   'utils/migrateConfig.js'
 ]
