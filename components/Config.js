@@ -36,22 +36,39 @@ class Config {
       return
     }
 
-    const config = YAML.parse(fs.readFileSync(`${path}${file}`, 'utf8'))
-    const defConfig = YAML.parse(fs.readFileSync(`${pathDef}${file}`, 'utf8'))
-
+    // ⚠️ 解析必须放在 try 里：用户手抖写坏 YAML 时 YAML.parse 会直接抛，
+    //    而那是在下面的 try 之外 —— 插件会因此**整个起不来**（一份坏配置拦住所有功能）。
+    let config = {}
+    let defConfig = {}
     try {
+      config = YAML.parse(fs.readFileSync(`${path}${file}`, 'utf8')) || {}
+      defConfig = YAML.parse(fs.readFileSync(`${pathDef}${file}`, 'utf8')) || {}
       this.validateConfig(config, file)
       const { differences, result } = this.mergeObjectsWithPriority(config, defConfig)
 
       if (differences) {
-        fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
+        // ⚠️ 这里**不再** `copyFileSync(模板 → 用户)`。
+        //    那句会把用户手写的注释整份吃掉（值靠下面的循环能救回来，注释救不回）。
+        //    合并结果 result 里已经同时有「模板的新键」和「用户的值」，所以
+        //    去掉它不影响「新键自动补默认值」这个好处 —— 循环会把 result 的每个键写回去。
         for (const key in result) {
           this.modify(file.replace('.yaml', ''), key, result[key])
         }
       }
     } catch (error) {
-      logger.error(`配置文件 ${file} 验证失败: ${error.message}`)
-      fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
+      // ⚠️ 校验失败时**以前只做了 copyFileSync**：用户的所有设置（包括令牌）
+      //    会被模板整份盖掉，而且是静默的。改成「模板只当缺失键的兜底」：
+      //    能解析出来的键一律保留，缺的用模板值补，然后再走同一套写回。
+      logger.error(`配置文件 ${file} 读取/校验未通过，改为按缺失键兜底（能读到的值保留）：${error.message}`)
+      try {
+        const { result } = this.mergeObjectsWithPriority(config || {}, defConfig || {})
+        for (const key in result) {
+          this.modify(file.replace('.yaml', ''), key, result[key])
+        }
+      } catch (inner) {
+        // 兜底也失败（磁盘满、权限不对…）：只记日志，**绝不能再抛**
+        logger.error(`配置文件 ${file} 兜底写回失败，本次用默认值运行：${inner.message}`)
+      }
     }
   }
 
@@ -66,7 +83,16 @@ class Config {
 
     if (this.config[key]) return this.config[key]
 
-    this.config[key] = YAML.parse(fs.readFileSync(file, 'utf8'))
+    // ⚠️ 这里也必须容错：同一份被写坏的 YAML，loadConfigFile 里已经兜住了，
+    //    但读的时候会再解析一次 —— 裸 `YAML.parse` 一抛，插件在
+    //    `getDefOrConfig` 那一步整个挂掉（一份坏配置 → 所有功能不可用）。
+    //    解析不出来就当空对象，让默认配置兜住，并在日志里说清是哪个文件。
+    try {
+      this.config[key] = YAML.parse(fs.readFileSync(file, 'utf8')) || {}
+    } catch (error) {
+      logger.error(`配置 ${file} 解析失败，本次用默认值运行：${error.message}`)
+      this.config[key] = {}
+    }
 
     this.watch(file, name, type)
 
