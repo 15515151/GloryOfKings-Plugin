@@ -663,9 +663,28 @@ class AuthStore {
       }
 
       const existing = pool.accounts[userId] || {}
-      // 多个全局账号是合法的：它们构成轮询池，请求在它们之间轮换（见 getAuthCandidates
-      // 里的 #rotateGlobals）。所以这里不再做「只认第一个」的唯一化。
-      const isGlobalDefault = Boolean(item.isGlobalDefault)
+
+      // ⚠️⚠️ 只在 payload **明确给了布尔值**时才改全局标记，其余沿用池子里的现状。
+      //
+      // 原本写的是 `Boolean(item.isGlobalDefault)`：payload 里少了这个字段（undefined）
+      // 就会被静默算成 false，把「扫码登录时设成的全局账号」一把刷回非全局。
+      // 2026-09-20 实测踩到：主人用 #营地QQ全局登录 扫的号，锅巴保存一次之后就
+      // 不在全局名单里了 —— #营地消息开 再也管不着它，而号本身还是好的
+      // （token / userSig 都在），排查时极难对上账。
+      //
+      // 注意：拿 `existing.isGlobalDefault` 兜底而不是包成 Boolean(existing...)，
+      // 是为了保留「面板上显式关掉某个全局号」的能力（那时 payload 带的是明确的 false）。
+      const isGlobalDefault = typeof item.isGlobalDefault === 'boolean'
+        ? item.isGlobalDefault
+        : Boolean(existing.isGlobalDefault)
+
+      // 被从全局刷成非全局时留一条日志：这种改动以前是完全静默的，
+      // 出事后只能靠翻 createdAt 反推。
+      if (existing.isGlobalDefault === true && isGlobalDefault === false) {
+        logger.warn(
+          `[营地账号池] 全局账号 ${userId} 被标记为非全局（isGlobalDefault: true → false）`
+        )
+      }
       const next = this.#normalizeAccount({
         ...existing,
         userId,
