@@ -34,6 +34,101 @@ git clone --depth=1 https://github.com/cchanlan/GloryOfKings-Plugin.git ./plugin
 cd ./plugins/GloryOfKings-Plugin && pnpm install
 ```
 然后重启云崽即可。
+
+## 工作原理
+
+插件跑在云崽（Yunzai-Bot V3）里：指令由 `apps/` 下的模块处理，经 `utils/` 里统一的营地接口和本地数据（`data/`）算出结果，再交给 `resources/html` + puppeteer 渲染成图片或文本发回群；订阅类功能由常驻定时任务主动轮询后推送。观战取流和营地消息长连接是两个随机器人启动的独立进程，插件只通过本机 HTTP 回环调它们。
+
+```mermaid
+flowchart TD
+    subgraph USER["用户侧"]
+        U["QQ 群 / 私聊"]
+        G["锅巴 / Web 管理面板 guoba"]
+    end
+
+    subgraph PLUGIN["GloryOfKings-Plugin（云崽插件）"]
+        YZ["云崽 Yunzai-Bot V3"]
+        IDX["入口 index.js<br/>扫描并加载 apps/ 全部模块"]
+        subgraph APPS["apps/ 指令与定时任务"]
+            CMD["指令：战绩 / 英雄皮肤 / 排名 / 观战 / 营地消息"]
+            TASK["定时：战绩推送 / 上下线提醒 / 日报周报 / 皮肤上新"]
+        end
+        subgraph CORE["utils/ 核心能力"]
+            API["api.js：营地接口调用与限频重试"]
+            CALC["pushStore / reportStore / rankStore：订阅状态与战绩归档计算"]
+            IMG["puppeteer + resources/html：数据渲染成图片"]
+        end
+    end
+
+    subgraph DATA["data/ 本地数据"]
+        BIND["UserData.yaml：QQ 到营地ID 绑定"]
+        AUTH["AuthPool.json：扫码登录态账号池"]
+        MISC["订阅表 / 战绩归档 / 图片缓存"]
+    end
+
+    subgraph BIN["独立后端进程（随机器人启动）"]
+        WATCH["gok-watch :8899<br/>观战取流 + ffmpeg"]
+        IM["gok-im :8900<br/>营地消息长连接"]
+    end
+
+    CAMP["腾讯王者营地 / 官网接口"]
+    SVC["分发 / 共享服务 gok-share<br/>按平台下发服务端程序<br/>营地ID 共享库（可选）"]
+
+    U -->|"发送指令"| YZ
+    YZ --> IDX
+    IDX --> CMD
+    IDX --> TASK
+
+    CMD --> BIND
+    CMD --> AUTH
+    TASK --> MISC
+    CMD --> API
+    CMD --> IMG
+    TASK --> CALC
+    CALC --> API
+    CALC --> IMG
+    API -->|"HTTPS 请求"| CAMP
+
+    CMD -->|"HTTP 回环 :8899"| WATCH
+    CMD -->|"轮询新消息 :8900"| IM
+    WATCH -->|"取流页 /r/房间号"| U
+    IM -->|"新消息"| CMD
+
+    IMG -->|"图片消息"| YZ
+    CALC -->|"推送文本 / 图片"| YZ
+    YZ -->|"回复与推送"| U
+
+    G -.->|"可视化管理"| CMD
+    SVC -.->|"取回 / 更新服务端程序"| WATCH
+    SVC -.->|"取回 / 更新服务端程序"| IM
+    SVC -.->|"本地无绑定时查询营地ID"| CMD
+```
+
+- **数据来源**：战绩、英雄、皮肤等全部来自腾讯王者营地与官网接口；`utils/api.js` 用扫码登录得到的账号池（`AuthPool.json`）轮询请求，并做全局限频和失败重试。
+- **登录态**：`#营地QQ全局登录` / `#营地wx全局登录` 扫码后写入 `AuthPool.json`，登录态「用则续命、闲置才死」，`apps/campRenew.js` 每天自动保活。
+- **独立后端**：`server/gok-watch`（观战取流 + ffmpeg）与 `server-im/gok-im`（营地消息长连接）是随机器人启动的独立进程，插件通过本机 HTTP 回环调用；**不保活**，机器人退出时一并结束。
+
+### 服务端程序从哪来
+
+观战和营地消息的服务端不是本仓库代码，而是主人提供的**分发 / 共享服务（gok-share）**按平台下发的原生程序（一个平台一个产物）；营地ID 共享库用的是同一个服务和同一套令牌。插件只负责把程序取回来、装好、起进程。
+
+```mermaid
+flowchart TD
+    A["主人发部署指令"] --> B{"问服务端有没有新版本<br/>本地是否已是最新且完好"}
+    B -->|"已是最新"| G["启动 gok-watch / gok-im"]
+    B -->|"有新版本"| C["下载加密的服务端程序<br/>解密并校验完整性"]
+    C --> D{"在临时目录解包试装<br/>并做一次自检"}
+    D -->|"不通过"| E["清掉临时文件<br/>旧版本原样保留"]
+    D -->|"通过"| F["原子替换旧文件<br/>记下安装台账"]
+    F --> G
+    E --> G
+    G --> H["程序自己向服务端续租心跳<br/>授权失效就退出，插件不保活"]
+```
+
+- **安装**：下载、解密、校验、解包、自检都在临时目录里完成，全部通过的最后一步才替换旧文件；任何一步失败，磁盘上的旧版本一个字节都不动。
+- **运行**：程序启动后由它自己向服务端续租（心跳），插件不实现、也不保活；授权失效时它会自己退出，避免无脑重拉变成重启风暴。
+- **更新**：刻意不做自动更新（会重启群友正在看的直播），要更新由主人发 `#营地观战部署` / `#营地消息部署`，强制重装用对应的「重装」指令。
+
 ## 指令
 
 ### 账号管理
