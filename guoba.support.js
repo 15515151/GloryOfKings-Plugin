@@ -281,7 +281,7 @@ export function supportGuoba () {
         {
           field: 'config.watchPublicUrl',
           label: '直播间对外地址',
-          bottomHelpMessage: '发到群里、给群友点开的那个地址。留空 = 用上面的，但 127.0.0.1 只有本机能开，群友点了是白屏 —— 所以部署时一定填成外网能访问的（域名或公网 IP）+ 端口，比如 http://abc.com:8899。注意防火墙/安全组要放行这个端口。',
+          bottomHelpMessage: '发到群里、给群友点开的那个地址。留空 = 用上面的，但 127.0.0.1 只有本机能开，群友点了是白屏 —— 所以部署时一定填成外网能访问的（域名或公网 IP）+ 端口，比如 http://abc.com:8899。注意防火墙/安全组要放行这个端口。⚠️ 必须填 http：营地的直播流只有 http，播放页走 https 会被浏览器当「混合内容」拦掉、画面全黑；也别给这个域名开强制 HTTPS / HSTS。',
           component: 'Input',
           componentProps: {
             placeholder: '留空 = 用上面的地址'
