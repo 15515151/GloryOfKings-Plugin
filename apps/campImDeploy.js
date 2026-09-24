@@ -29,11 +29,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { PluginPath, PluginName, Config } from '#components'
 import { shouldQuote } from '#utils'
-import { pm2, pm2Proc, pm2Bin, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
+import { pm2, pm2Proc, resetPm2Cache, isOurProcess } from '../utils/pm2.js'
 import {
   installPackage, fetchPackageMeta, probeStatus, waitStatus, fmtUptime,
   normalizeBase, STATE_FILE
 } from '../utils/deploy.js'
+import { ensureDependencies } from '../utils/dependency.js'
 
 /** 云崽根目录（插件住在 `<根>/plugins/<名字>`，往上两级）—— 只为把路径显示得短一点 */
 const YunzaiRoot = path.resolve(PluginPath, '../..')
@@ -48,8 +49,15 @@ const PKG_NAME = 'im'
 const PROC_NAME = 'gok-im'
 const DEFAULT_PORT = 8900
 
-/** 引导语：没配分发服务时统一用这句 */
-const GROUP_HINT = '进群 972915804 找主人要部署地址和令牌，然后发 #营地消息接入 <地址> <令牌>'
+/**
+ * 引导语：没配分发服务时统一用这句。
+ *
+ * ⚠️ 把**锅巴那条路也写上**：群里发指令要带地址和令牌，令牌是凭证、贴群里就泄了；
+ * 而锅巴是网页表单，填进去更稳妥。两条路等价，写全了对方才知道可以不发指令。
+ */
+const GROUP_HINT =
+  '进群 972915804 找主人要部署地址和令牌，然后发 #营地消息接入 <地址> <令牌>；' +
+  '也可以在锅巴「王者荣耀 → 服务端接入」里填「分发服务地址」和「接入令牌」，一样能接入'
 
 /**
  * 解下来之后必须齐活的文件。少一个服务端起不来。
@@ -149,20 +157,22 @@ export class CampImDeploy extends plugin {
   /* -------------------------------------------------------- 部署 */
 
   async deploy (e, { adopted = false } = {}) {
-    if (!pm2Bin()) {
-      return e.reply(
-        '没找到 pm2，先装一个再部署：npm i -g pm2\n' +
-        '（装完如果还报找不到，重启一下云崽让它认出新的 PATH）',
-        shouldQuote()
-      )
-    }
-
     const { url, token } = distConfig()
     if (!url || !token) {
       return e.reply(
         adopted
           ? '配置没写进去，重发一次试试'
           : `还没接入分发服务。${GROUP_HINT}`,
+        shouldQuote()
+      )
+    }
+
+    await e.reply('正在检查部署依赖（pm2），缺少时会自动安装…', shouldQuote())
+    const dependency = await ensureDependencies({ cfg: cfg(), logger })
+    if (!dependency.ok) {
+      return e.reply(
+        `依赖环境没准备好：${dependency.messages.join('；')}\n` +
+        '也可以在锅巴「王者荣耀 → 服务端接入」里配置依赖镜像/代理后重试',
         shouldQuote()
       )
     }
@@ -222,6 +232,10 @@ export class CampImDeploy extends plugin {
       if (missing.length) {
         throw new Error(`服务端文件不齐，缺：${missing.join('、')}`)
       }
+
+      // 先校验目录并解包，再安装服务端依赖，避免新建目录被误认为外来目录。
+      const nodeDependencies = await ensureDependencies({ needWs: true, nodeDir: SERVER_DIR, cfg: cfg(), logger })
+      if (!nodeDependencies.ok) throw new Error(nodeDependencies.messages.join('；'))
 
       const startup = restarting
         ? pm2(['restart', PROC_NAME, '--update-env'], { timeout: 60000 })

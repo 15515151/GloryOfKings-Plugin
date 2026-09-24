@@ -48,6 +48,44 @@ function publicBase () {
 }
 
 /**
+ * 发到群里的直播间链接：**http 和 https 各发一条**，并告诉人先点哪条。
+ *
+ * ⚠️⚠️ 为什么非得发两条（2026-09-24 踩透，别再合并成一条）：
+ *   · **http 那条是首选**：服务端会 302 到营地 CDN，观众直连腾讯云边缘节点，
+ *     本机上行 ≈ 0（原来是「观众数 × 2.9Mbps」）。能走这条就该走这条。
+ *   · **但浏览器会拆台**：桌面 Chrome/Edge 和部分手机浏览器（实测小米自带）会把 http
+ *     **强制升级成 https**（HTTPS-Upgrade），而营地 CDN 只有 http —— 它的证书是单层通配
+ *     `*.liveplay.myqcloud.com`，盖不住真实 CNAME 那个多级子域
+ *     `xxx.livecenter.smoba.qq.com.livecdn.liveplay.myqcloud.com`，https 直连必然证书错误。
+ *     于是 https 页面去拉 http 流 = Mixed Content，**浏览器连请求都不发**
+ *     → 永久黑屏 + 无限「重连中…」。
+ *   · 「让页面自己跳回 http」已验证是死路：跳过去立刻被浏览器升回来；服务端 302 到 http
+ *     更糟（CF 隧道入口只有 443，会被边缘拽回 https → 死循环）。
+ *   · **https 那条是兜底**：服务端对 https 请求不再 302、改用本机转发
+ *     （见 watch-server.js 的 `isHttpsReq`），画面一定有，代价是每个观众吃约 2.9Mbps 上行。
+ * 所以让人**先点 http、黑屏再点 https**：多数人保住零上行，谁也不会看不了。
+ */
+function liveLinks (path) {
+  const base = publicBase()
+  const p = String(path || '/')
+  const httpUrl = base.replace(/^https:/i, 'http:') + p
+  const httpsUrl = base.replace(/^http:/i, 'https:') + p
+  if (!canTls(base)) return `直播间：${base}${p}`
+  return `直播间：${httpUrl}\n黑屏或一直「重连中」就点这条：${httpsUrl}`
+}
+
+/**
+ * 这个对外地址有没有可用的 https？
+ * ⚠️ 内网/本机地址（IP、`[v6]`、localhost、带端口）**没有证书** —— 给这种地址提示
+ *    「改成 https」只会把人引到一个证书错误页，比黑屏更让人懵。
+ *    liveLinks 和「在播」列表两处都要用，别各写一份（改漏一处就会发出坏链接）。
+ */
+function canTls (base) {
+  const host = String(base).replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '')
+  return !(/^\d/.test(host) || /^\[/.test(host) || /^localhost/i.test(host) || /:\d+$/.test(host))
+}
+
+/**
  * 发起人自己扫码登记的全局账号。
  *
  * 观战名单只能是「他自己的营地好友」，所以这里必须按属主取号，不能用全局账号池那套轮询
@@ -218,7 +256,11 @@ export class WatchBattle extends plugin {
     if (!list.length) {
       return e.reply('现在没有在播的观战\n发送 #营地观战 看看好友里谁在打', shouldQuote())
     }
-    const base = publicBase()
+    // ⚠️ 列表里**每路只给 http 那条**（首选，走 CDN 直连零上行）——
+    //    多路时每路都跟一条 https 会把消息刷得没法看，改成末尾统一说一句怎么换。
+    //    双链接的来龙去脉见 liveLinks 的注释。
+    const configuredBase = publicBase()
+    const base = canTls(configuredBase) ? configuredBase.replace(/^https:/i, 'http:') : configuredBase
     const me = String(e.user_id || '')
     const lines = list.map((r, i) => {
       const extra = [r.recording ? '录制中' : '', `${r.clients} 人在看`].filter(Boolean).join(' · ')
@@ -226,7 +268,8 @@ export class WatchBattle extends plugin {
       const mine = me && String(r.owner || '') === me ? '（你开的）' : ''
       return `${i + 1}. ${r.nick || r.rid}${mine}${extra ? `（${extra}）` : ''}\n${base}${r.url}`
     })
-    const tail = '\n\n停自己开的：发 #营地观战 停\n停某一路：发 #营地观战 停 <上面的编号>'
+    const tail = (canTls(base) ? '\n\n黑屏或一直「重连中」：把网址开头的 http 改成 https 再打开' : '')
+      + '\n\n停自己开的：发 #营地观战 停\n停某一路：发 #营地观战 停 <上面的编号>'
     return e.reply(`📺 正在播的观战（${list.length}）\n\n${lines.join('\n')}${tail}`, shouldQuote())
   }
 
@@ -296,12 +339,13 @@ export class WatchBattle extends plugin {
     }
 
     // ⭐ 每一路一个**独立网址**（带房间号），两个人可以同时看不同的对局
-    const url = `${publicBase()}${res.url || '/'}`
+    // ⚠️ 发 http + https 两条（先点 http 保零上行，黑屏再点 https）—— 见 liveLinks 的注释
+    const links = liveLinks(res.url || '/')
     await e.reply(
       // ⚠️ 别报「开局约 2 分钟」这种假数 —— 后台只知道「这一刻还没拿到画面」，
       //    跟开局多久无关（实测有一局开局 175 秒了照样要等 75 秒）。
       //    只说「在等画面 + 通常多快」，别替营地编理由。
-      res.pending ? `直播间：${url}\n画面马上就来，最长等 1 分钟左右` : `直播间：${url}`,
+      res.pending ? `${links}\n画面马上就来，最长等 1 分钟左右` : links,
       shouldQuote()
     )
   }
@@ -394,9 +438,10 @@ export class WatchBattle extends plugin {
       return e.reply(`${res?.error || '这局取不到画面'}\n重发 #营地观战 换一个试试`, shouldQuote())
     }
 
-    const url = `${publicBase()}${res.url || '/'}`
+    // ⚠️ 同上：http + https 两条，先点 http（见 liveLinks 的注释）
+    const links = liveLinks(res.url || '/')
     await e.reply(
-      res.pending ? `直播间：${url}\n画面马上就来，最长等 1 分钟左右` : `直播间：${url}`,
+      res.pending ? `${links}\n画面马上就来，最长等 1 分钟左右` : links,
       shouldQuote()
     )
   }
@@ -473,13 +518,19 @@ export class WatchBattle extends plugin {
     }
   }
 
-  /** 服务没起来时的提示：说清发生了什么 + 下一步做什么 */
+  /**
+   * 服务没起来时的提示：说清发生了什么 + 下一步做什么。
+   *
+   * ⚠️ 看到这句的**多半不是主人**（群友发 #营地观战 也会撞上），所以别写
+   * 「请主人发 #王者设置」那种只有主人能做的事 —— 对方照着做不了，只会来问。
+   * 统一指向「进群找主人要地址和令牌」这条对谁都成立的路。
+   */
   serviceDownText (error) {
     const hint = /abort|timeout/i.test(error?.message || '')
       ? '观战服务没响应'
       : '观战服务没在跑'
-    const master = '请主人发 #王者设置 检查观战服务地址，或到服务器上确认 gok-watch 进程还在'
-    return `${hint}\n${master}`
+    return `${hint}\n还没装的话：进群 972915804 找主人要部署地址和令牌，然后请主人发 #营地观战接入 <地址> <令牌>；` +
+      '也可以在锅巴「王者荣耀 → 服务端接入」里填「分发服务地址」和「接入令牌」'
   }
 
   async shot (view) {

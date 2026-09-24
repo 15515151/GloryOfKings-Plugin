@@ -213,6 +213,24 @@ export function supportGuoba () {
           }
         },
         {
+          field: 'config.dependencyRegistry',
+          label: '依赖 npm 镜像',
+          bottomHelpMessage: '接入观战/营地消息时自动安装缺失依赖，默认使用国内 npm 镜像；留空也会使用默认镜像。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'https://registry.npmmirror.com'
+          }
+        },
+        {
+          field: 'config.dependencyProxy',
+          label: '依赖安装代理',
+          bottomHelpMessage: '外网安装依赖时使用的 HTTP(S) 代理，例如 http://127.0.0.1:7890；不需要就留空。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'http://127.0.0.1:7890'
+          }
+        },
+        {
           field: 'config.shareEnabled',
           label: '营地ID共享库',
           bottomHelpMessage:
@@ -281,10 +299,19 @@ export function supportGuoba () {
         {
           field: 'config.watchPublicUrl',
           label: '直播间对外地址',
-          bottomHelpMessage: '发到群里、给群友点开的那个地址。留空 = 用上面的，但 127.0.0.1 只有本机能开，群友点了是白屏 —— 所以部署时一定填成外网能访问的（域名或公网 IP）+ 端口，比如 http://abc.com:8899。注意防火墙/安全组要放行这个端口。⚠️ 必须填 http：营地的直播流只有 http，播放页走 https 会被浏览器当「混合内容」拦掉、画面全黑；也别给这个域名开强制 HTTPS / HSTS。',
+          bottomHelpMessage: '填写群友能访问的地址（域名或公网 IP）和端口，如 http://abc.com:8899，并放行防火墙/安全组对应端口。使用 https 时先配置 HTTPS 反向代理；需要 CDN 直连时，再配置下方「观战 CDN（https）」。',
           component: 'Input',
           componentProps: {
             placeholder: '留空 = 用上面的地址'
+          }
+        },
+        {
+          field: 'config.watchCdnHttps',
+          label: '观战 CDN（https）',
+          bottomHelpMessage: '先按 server/README-CDN-HTTPS.md 部署 Cloudflare Worker，再填 https://cdn.example.com；保存后发 #营地观战部署 生效，清空后也要保存并部署。留空时 https 观众使用本机转发，http 观众仍直连营地 CDN。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'https://cdn.example.com'
           }
         },
         {

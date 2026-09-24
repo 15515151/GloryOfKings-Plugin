@@ -92,6 +92,17 @@ cd ./plugins/GloryOfKings-Plugin && pnpm install
 #营地观战部署 / #营地观战服务     # 更新代码 / 看进程、ffmpeg、对外地址配好没
 ```
 
+服务端接入配置（锅巴「王者荣耀 → 服务端接入」；`watchCdnHttps` 在「营地观战」）：
+
+在锅巴填写分发服务地址和接入令牌并保存，再发 `#营地观战部署` 或 `#营地消息部署`。
+
+| 配置项 | 默认值 | 用途 |
+| --- | --- | --- |
+| `shareApiUrl` | `https://gok.9e.nz:442` | 共享库地址；仍需填写接入令牌并开启共享库 |
+| `dependencyRegistry` | `https://registry.npmmirror.com` | 自动安装依赖使用的 npm 镜像 |
+| `dependencyProxy` | 空 | npm / ffmpeg 依赖安装使用的 HTTP(S) 代理 |
+| `watchCdnHttps` | 空 | 按 `server/README-CDN-HTTPS.md` 部署 HTTPS CDN Worker 后填写；修改或清空后保存，再发 `#营地观战部署` 生效。留空时 HTTPS 观众使用本机转发，HTTP 观众仍直连 CDN |
+
 ### 营地消息
 
 营地好友发来的消息会**转到你的 QQ 私信**，你可以直接回（仅私聊）。
