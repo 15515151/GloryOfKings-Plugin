@@ -245,7 +245,11 @@ export class Help extends plugin {
 
   async showHelp(e) {
     const keyword = (e.msg.match(/^#?王者(?:荣耀|农药)?(?:插件|plugin)?(?:帮助|help)\s*(.*)$/i)?.[1] || '').trim()
-    let sections = keyword ? filterSections(helpSections, keyword) : helpSections
+    // 本地扩展分组（主人专属指令）并进主列表；公开仓没有 local/ 时这里是空的，
+    // 别人拿到的帮助和以前一模一样。见下面 localExtraSections()。
+    const extra = await localExtraSections()
+    const all = mergeLocalSections(helpSections, extra)
+    let sections = keyword ? filterSections(all, keyword) : all
 
     // 「主人指令」「系统指令」只在主人私聊里出现。群聊里贴出去等于把主人专属指令的
     // 名字和用法广播给全群；普通用户更不需要看这些。过滤放在关键词筛选之后，
@@ -281,6 +285,38 @@ export class Help extends plugin {
   async showMasterPanel(e) {
     await renderMasterPanel(e)
   }
+}
+
+/**
+ * 主人专属的帮助分组（放在 `local/helpExtra.js` 里）。
+ *
+ * ⚠️ `local/` 被 .gitignore 挡着，**不进公开仓** —— 别人的机器人没有那些指令，
+ *    也就没有这个文件，这里是空的，帮助和以前完全一致。
+ * ⚠️ 只认 `sections` 数组；`after` 是可选的分组名，填了就把这些分组插到那一组后面
+ *    （不填则追加到末尾），这样主人专属的分组能挨着「主人指令」摆。
+ */
+let localExtraCache = null
+async function localExtraSections () {
+  if (localExtraCache) return localExtraCache
+  try {
+    const mod = await import('../local/helpExtra.js')
+    localExtraCache = {
+      sections: Array.isArray(mod?.sections) ? mod.sections : [],
+      after: String(mod?.after || '')
+    }
+  } catch {
+    // 没有 local/helpExtra.js 是**正常情况**（公开仓里就没这个文件）
+    localExtraCache = { sections: [], after: '' }
+  }
+  return localExtraCache
+}
+
+/** 把本地扩展分组并进主列表；`after` 命中哪个分组就插在它后面 */
+function mergeLocalSections (base, { sections = [], after = '' } = {}) {
+  if (!sections.length) return base
+  const at = after ? base.findIndex(section => section.title === after) : -1
+  if (at < 0) return [...base, ...sections]
+  return [...base.slice(0, at + 1), ...sections, ...base.slice(at + 1)]
 }
 
 /**
