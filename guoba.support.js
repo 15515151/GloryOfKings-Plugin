@@ -399,6 +399,28 @@ export function supportGuoba () {
         },
         {
           component: 'Divider',
+          label: '出图'
+        },
+        {
+          field: 'config.imgType',
+          label: '输出图片类型',
+          helpMessage: '插件所有出图指令（战绩 / 主页 / 皮肤墙 / 帮助面板 / 营地消息卡片…）统一用这个格式',
+          bottomHelpMessage:
+            '插件 37 处出图统一读这一项，改完下次出图就生效，不用重启。' +
+            '⚠️ 选 WebP 之前先看你的适配器：微信（ComWeChat）的图片接口不认 webp，' +
+            '会把图降级成「文件」发出去 —— 群友收到的是 xxx.webp 文件卡片而不是图（2026-09-24 实测）。' +
+            'QQ / OneBot 等平台用 webp 能省三成左右体积。拿不准就保持 JPEG。',
+          component: 'Select',
+          componentProps: {
+            options: [
+              { label: 'JPEG（推荐，全平台通用）', value: 'jpeg' },
+              { label: 'PNG（无损，体积最大）', value: 'png' },
+              { label: 'WebP（体积小，微信下会变成文件）', value: 'webp' }
+            ]
+          }
+        },
+        {
+          component: 'Divider',
           label: '图片缓存'
         },
         {

@@ -20,7 +20,7 @@
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { AT_HEAD, stripAtText } from '../utils/atTarget.js'
-import { shouldQuote } from '#utils'
+import { getImgType, shouldQuote } from '#utils'
 import { Config } from '#components'
 import authStore from '../utils/authStore.js'
 
@@ -485,7 +485,7 @@ export class WatchBattle extends plugin {
   async shot (view) {
     try {
       return await puppeteer.screenshot('WatchBattle', {
-        imgType: 'webp',
+        imgType: getImgType(),
         tplFile: 'plugins/GloryOfKings-Plugin/resources/html/WatchBattle.html',
         // 漏了这行样式表会 404，出的是纯文字图
         _res_path: '../../../plugins/GloryOfKings-Plugin/resources/',

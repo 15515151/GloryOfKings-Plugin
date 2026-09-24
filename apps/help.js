@@ -1,6 +1,6 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { renderMasterPanel } from '../utils/masterPanel.js'
-import { Button, shouldQuote } from '#utils'
+import { getImgType, Button, shouldQuote } from '#utils'
 
 const helpSections = [
   {
@@ -263,7 +263,7 @@ export class Help extends plugin {
       const inventoryImage = await puppeteer.screenshot('help', {
         tplFile: 'plugins/GloryOfKings-Plugin/resources/html/help.html',
         _res_path: '../../../plugins/GloryOfKings-Plugin/resources/',
-        imgType: 'webp',
+        imgType: getImgType(),
         sections,
         keyword,
         generatedAt: new Date().toLocaleString()

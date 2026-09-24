@@ -48,7 +48,9 @@ const COPY_FILES = [
   'utils/localBind.js',
   'utils/authStore.js',
   // 营地消息的本地状态（test/campImDedup.test.mjs 用）
-  'utils/campImStore.js'
+  'utils/campImStore.js',
+  // 出图格式（test/imageType.test.mjs 用）
+  'utils/imageType.js'
 ]
 
 /** 测试用的假配置。地址/令牌都是假的，绝不碰真凭证 */
