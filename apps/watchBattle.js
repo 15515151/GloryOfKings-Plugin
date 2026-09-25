@@ -478,8 +478,8 @@ export class WatchBattle extends plugin {
     const hint = /abort|timeout/i.test(error?.message || '')
       ? '观战服务没响应'
       : '观战服务没在跑'
-    const master = '请主人发 #王者设置 检查观战服务地址，或到服务器上确认 gok-watch 进程还在'
-    return `${hint}\n${master}`
+    return `${hint}\n请主人发 #营地观战服务 查看状态；还没接入时，私聊机器人发 #营地观战接入 <地址> <令牌>，` +
+      '或在锅巴「王者荣耀 → 服务端接入」填写服务地址和接入令牌'
   }
 
   async shot (view) {

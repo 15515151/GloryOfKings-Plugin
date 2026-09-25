@@ -86,10 +86,15 @@ export async function disconnectAccounts (userIds) {
 /**
  * 服务没起来时的提示：说清发生了什么 + 下一步做什么。
  * ⚠️ 不露实现细节（端口、进程名之外的都不写）。
+ *
+ * ⚠️ 看到这句的**多半不是主人**（群友发指令也会撞上），所以别只写
+ * 「请主人发 #营地消息部署」—— 没接入过的话那条也跑不起来。
+ * 指向主人可执行的状态检查和接入步骤。
  */
 export function serviceDownText (error) {
   const hint = /abort|timeout/i.test(error?.message || '')
     ? '营地消息服务没响应'
     : '营地消息服务没在跑'
-  return `${hint}\n请主人发 #营地消息部署`
+  return `${hint}\n请主人发 #营地消息服务 查看状态；还没接入时，私聊机器人发 #营地消息接入 <地址> <令牌>，` +
+    '或在锅巴「王者荣耀 → 服务端接入」填写服务地址和接入令牌'
 }
