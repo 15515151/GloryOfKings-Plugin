@@ -327,7 +327,7 @@ console.log(JSON.stringify({ r1, r2, r3, r4, r5, sentEtag }))
 
 /* ------------------------------------------------------------ 安装器 */
 
-test('installNative：台账对 + 二进制完好 → 不下载，直接 updated:false', async () => {
+test('installNative：先问版本，远端 sha 与台账一致 + 二进制完好 → 不下载，updated:false', async () => {
   const root = makeSandbox()
   try {
     ensurePluginRoot(root)
@@ -346,16 +346,95 @@ test('installNative：台账对 + 二进制完好 → 不下载，直接 updated
     const out = run(root, `
 ${PRELUDE}
 const { installNative } = await import('./utils/dist.js')
-// 没有网络：一旦它去下载就会 ENOENT/连不上，这里直接断言「根本没请求」
-const fake = async () => { throw new Error('不该发请求') }
+// ⭐ 必须**先**问 /latest：只有远端 sha 和台账一致才准跳过下载。
+//    下载那一步故意抛错 —— 走到就说明判断顺序又反了
+const seen = []
+const fake = async (url) => {
+  seen.push(url.replace('http://x.invalid', ''))
+  if (url.includes('/latest')) {
+    return new Response(JSON.stringify({ ok: true, sha: SHA, kind: 'native', asset: 'gok-watch-' + TARGET, enc: { keyId: 'k1' } }), { status: 200 })
+  }
+  throw new Error('不该发请求：' + url)
+}
 const r = await installNative({ name: 'watch', destDir: path.join(ROOT, 'PluginRoot', 'server'), url: 'http://x.invalid', token: 't', fetchImpl: fake })
-console.log(JSON.stringify(r))
+console.log(JSON.stringify({ seen, r }))
 `, )
     assert.ok(out.ok, out.stderr)
-    const r = JSON.parse(out.stdout)
-    assert.equal(r.ok, true)
-    assert.equal(r.updated, false)
-    assert.equal(r.sha, SHA)
+    const res = JSON.parse(out.stdout)
+    // ⭐ 一定问过版本，而且只问了版本：一个字节都不下载
+    assert.deepEqual(res.seen, ['/api/v1/packages/watch/latest?target=' + TARGET])
+    assert.equal(res.r.ok, true)
+    assert.equal(res.r.updated, false)
+    assert.equal(res.r.sha, SHA)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('installNative：台账是旧版、上游有新版本 → 必须下载更新（不能拿台账当「已是最新」）', async () => {
+  const root = makeSandbox()
+  try {
+    ensurePluginRoot(root)
+    const { createHash } = await import('node:crypto')
+    const dir = path.join(root, 'PluginRoot', 'server')
+    fs.mkdirSync(dir, { recursive: true })
+    // 本地装的是 v0.2.0，而且**文件完好** —— 这正是旧代码误报「已是最新」的场景
+    const oldBin = 'OLD v0.2.0 BINARY'
+    fs.writeFileSync(path.join(dir, 'gok-watch'), oldBin, { mode: 0o755 })
+    fs.writeFileSync(path.join(dir, '.gok-native.json'), JSON.stringify({
+      name: 'watch', kind: 'native', sha: SHA, target: TARGET, binary: 'gok-watch',
+      size: Buffer.byteLength(oldBin),
+      sha256: createHash('sha256').update(Buffer.from(oldBin)).digest('hex'),
+      version: 'gok-watch 0.2.0 (x86_64-unknown-linux-gnu)'
+    }), { mode: 0o600 })
+
+    const out = run(root, `
+${PRELUDE}
+const { installNative, readNativeState } = await import('./utils/dist.js')
+const NEW_SHA = 'native-v0.4.0'
+const destDir = path.join(ROOT, 'PluginRoot', 'server')
+const binSrc = fakeBinSource('0.4.0')
+const plain = tarGz('gok-watch', binSrc)
+const container = seal(plain, KEY, AAD)
+const plainSha = crypto.createHash('sha256').update(plain).digest('hex')
+const seen = []
+const fake = async (url) => {
+  seen.push(url.replace('http://x.invalid', ''))
+  if (url.includes('/latest')) {
+    return new Response(JSON.stringify({ ok: true, sha: NEW_SHA, kind: 'native', asset: 'gok-watch-' + TARGET, enc: { keyId: 'k1' } }), { status: 200 })
+  }
+  if (url.includes('/download')) {
+    // 下密文必须带**远端**的 sha，不能拿台账里的旧 sha 去下
+    if (!url.includes('sha=' + NEW_SHA)) throw new Error('下载用的 sha 不对：' + url)
+    return new Response(new Uint8Array(container), { status: 200, headers: { 'x-gok-key-id': 'k1' } })
+  }
+  if (url.includes('/key')) {
+    return new Response(JSON.stringify({ ok: true, key: KEY.toString('base64'), aad: AAD, keyId: 'k1', sha256Plain: plainSha }), { status: 200 })
+  }
+  throw new Error('unexpected ' + url)
+}
+const r = await installNative({ name: 'watch', destDir, url: 'http://x.invalid', token: 't', fetchImpl: fake })
+const installed = fs.readFileSync(path.join(destDir, 'gok-watch'))
+console.log(JSON.stringify({
+  seen, r, state: readNativeState(destDir),
+  diskSha: crypto.createHash('sha256').update(installed).digest('hex'),
+  installedText: installed.toString('utf8')
+}))
+`, )
+    assert.ok(out.ok, out.stderr)
+    const res = JSON.parse(out.stdout)
+    // ① 先问版本
+    assert.equal(res.seen[0], '/api/v1/packages/watch/latest?target=' + TARGET)
+    // ② 真的去下载并换掉了
+    assert.ok(res.seen.some(u => u.includes('/download')), '没去下载：' + JSON.stringify(res.seen))
+    assert.equal(res.r.ok, true)
+    assert.equal(res.r.updated, true)
+    assert.equal(res.r.sha, 'native-v0.4.0')
+    assert.match(res.r.version, /0\.4\.0/)
+    // ③ 磁盘上换成了新二进制，台账跟着换成新版（否则下次又拿旧版本号去比）
+    assert.match(res.installedText, /0\.4\.0/)
+    assert.equal(res.state.sha, 'native-v0.4.0')
+    assert.equal(res.state.sha256, res.diskSha)
   } finally {
     cleanup(root)
   }

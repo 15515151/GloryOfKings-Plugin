@@ -442,9 +442,10 @@ function cleanup (dir) {
 /**
  * 装 / 更新一个原生包。
  *
- * 流程（契约 §2.2 的 ② ④ ⑤ ⑥ ⑦）：
- *   ①② 问版本（`/latest`）
- *   ③  台账 sha 相同 + 二进制自检通过 → 不下载，直接返回 `updated:false`
+ * 流程（契约 §2.2 的 ①②④⑤⑥⑦）：
+ *   ①② **先**问版本（`/latest`），再拿远端的 sha 和本地台账比 —— 顺序反了就会把
+ *       「本地文件没坏」误报成「已是最新」，于是 `#营地…部署` 永远只重启、不更新
+ *   ③  远端 sha 与台账相同 + 二进制自检通过 → 不下载，直接返回 `updated:false`
  *   ④⑤ 下密文、取密钥（keyId 必须和 /latest 的 enc.keyId 一致，否则重来）
  *   ⑥  解密 + sha256 校验 → 不一致整轮重来（最多 2 轮）
  *   ⑦  在 `.staging-*` 里解包、chmod 0755、跑 `--version` 自检，最后才 rename 覆盖
@@ -480,9 +481,15 @@ export async function installNative ({
 
   fs.mkdirSync(destDir, { recursive: true })
 
-  // ③ 已经是最新，而且二进制还完好 → 什么都不做
+  // ①② 先问服务端有没有新版。**这一步绝不能省**：台账只说明「本地装的是哪个版本」，
+  // 拿它自己和自己比永远是「已是最新」。跳过 /latest 就等于把这个命令退化成「重启」。
+  // 连不上上游时直接失败退出（旧服务一个字节不动），不猜、也不谎称最新。
+  const latest = await fetchLatest(name, tgt, { ...conf, fetchImpl })
+  if (!latest.ok) return { ok: false, message: latest.message }
+
+  // ③ 远端 sha 和台账一致，而且磁盘上那个二进制确实还是它 → 不下载，只重启
   const state = readNativeState(destDir)
-  if (!force && state?.sha && state?.target === tgt && localBinOk(destDir, bin, state)) {
+  if (!force && state?.sha === latest.sha && state?.target === tgt && localBinOk(destDir, bin, state)) {
     return {
       ok: true,
       updated: false,
@@ -494,11 +501,9 @@ export async function installNative ({
     }
   }
 
-  const latest = await fetchLatest(name, tgt, { ...conf, fetchImpl })
-  if (!latest.ok) return { ok: false, message: latest.message }
-
-  // 版本没变、文件也没坏（上面 localBinOk 没过的多半是文件坏了）→ 还是得重下，
-  // 但不用重新问版本。这里刻意不提前 return，交给下面统一走一遍安装。
+  // 走到这里有两种情况，都要完整装一遍：
+  //   ① 远端 sha 和台账不一样（真·有新版本）
+  //   ② sha 没变但 localBinOk 没过（二进制被改坏/截断）—— 不能因为「版本号没变」就跳过
 
   let lastMessage = '未知原因'
   for (let attempt = 1; attempt <= 2; attempt++) {
