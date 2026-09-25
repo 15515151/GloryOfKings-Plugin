@@ -139,7 +139,7 @@ export class WatchDeploy extends plugin {
         //    ⚠️ 和上面那条是两条完全不同的路，别混：
         //      · 接入 = 在自己机器上装一套（地址是**分发服务**）
         //      · 连接 = 用别人跑着的那一套（地址是**观战服务**本身）
-        { reg: '^#营地观战连接\\s+(\\S+)(?:\\s+(\\S+))?$', fnc: 'connectRemote', permission: 'master' },
+        { reg: '^#营地观战连接\\s+(\\S+)$', fnc: 'connectRemote', permission: 'master' },
         { reg: '^#营地观战部署$', fnc: 'deploy', permission: 'master' },
         { reg: '^#营地观战服务$', fnc: 'status', permission: 'master' }
       ]
@@ -189,11 +189,11 @@ export class WatchDeploy extends plugin {
   /* -------------------------------------------------------- 连远端 */
 
   /**
-   * `#营地观战连接 <地址> [口令]` —— 用**别人已经部署好的**观战服务。
+   * `#营地观战连接 <地址>` —— 用**别人已经部署好的**观战服务。
    *
    * 和「接入」是两条完全不同的路：
    *   · `#营地观战接入 <分发地址> <令牌>` = 从分发服务下代码，在**本机**装一套
-   *   · `#营地观战连接 <观战地址> [口令]` = 直接用别人跑着的那一套，本机什么都不装
+   *   · `#营地观战连接 <观战地址>` = 直接用别人跑着的那一套，本机什么都不装
    *
    * ⚠️ 连远端之后本机**不需要** pm2 / ffmpeg / 开端口，也不会有任何本机进程：
    *    取流、轮询、转码全在对方那台机器上跑（代价是画面要经对方中转，且对方能看到
@@ -205,28 +205,26 @@ export class WatchDeploy extends plugin {
    *    对方要是老版本、没这个口子，这里会明确提示要更新。
    */
   async connectRemote (e) {
-    const m = /^#营地观战连接\s+(\S+)(?:\s+(\S+))?$/.exec(String(e.msg || '').trim())
-    if (!m) return e.reply('格式：#营地观战连接 <地址> [口令]', shouldQuote())
+    const m = /^#营地观战连接\s+(\S+)$/.exec(String(e.msg || '').trim())
+    if (!m) return e.reply('格式：#营地观战连接 <地址>', shouldQuote())
 
     const url = normalizeBase(m[1])
-    const token = (m[2] || '').trim()
 
     if (!/^https?:\/\//i.test(url)) {
       return e.reply('地址要以 http:// 或 https:// 开头', shouldQuote())
     }
 
-    // 先试连再落盘 —— 地址或口令写错了要当场知道
-    const probe = await probeRemoteStatus(url, token)
+    // 先试连再落盘 —— 地址写错了要当场知道
+    const probe = await probeRemoteStatus(url)
     if (!probe.ok) {
-      return e.reply(`${probe.message}\n地址和口令核对一下再发一次`, shouldQuote())
+      return e.reply(`${probe.message}\n地址核对一下再发一次`, shouldQuote())
     }
 
     Config.modify('config', 'watchApiUrl', url)
-    Config.modify('config', 'watchApiToken', token)
     logger.mark(`[${PluginName}] 已连接远端观战服务：${url}`)
 
     // 把自己的账号递过去：对方池子里还没有它们，不递就是「登录成功却查不到好友」
-    const report = await reportRemoteAccounts(url, token, { force: true })
+    const report = await reportRemoteAccounts(url, { force: true })
 
     const lines = ['✅ 已连接这个观战服务', '', `对方池子里的账号：${probe.accounts} 个`]
     if (!report.ok) {

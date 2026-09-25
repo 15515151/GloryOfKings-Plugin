@@ -35,7 +35,7 @@ export const STATUS_PATH = '/api/status'
 /**
  * 探一下这个地址是不是活着的观战/消息服务（GET /api/status）。
  *
- * 「连接」指令用它做**先试连再落盘**：地址或口令写错了要当场知道，
+ * 「连接」指令用它做**先试连再落盘**：地址写错了要当场知道，
  * 而不是等发 `#营地观战` 时才报一句看不懂的错。
  *
  * ⚠️ 顺便拦一类常见坑：**把「分发服务」的地址当成观战服务填**。
@@ -43,17 +43,18 @@ export const STATUS_PATH = '/api/status'
  *    但它的 `/api/status` 是 404 —— 只回一句 `not_found`，
  *    用户完全看不出「我填错服务了」。这里替他把话说清楚。
  */
-export async function probeRemoteStatus (base, token, { timeout = 8000 } = {}) {
+export async function probeRemoteStatus (base, { timeout = 8000 } = {}) {
   const url = String(base || '').replace(/\/+$/, '')
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeout)
   try {
-    const secret = String(token || '').trim()
-    const r = await fetch(url + STATUS_PATH, {
-      headers: secret ? { 'X-Watch-Token': secret, 'X-Im-Token': secret } : undefined,
-      signal: ctl.signal
-    })
-    if (r.status === 401) return { ok: false, message: '口令不对' }
+    const r = await fetch(url + STATUS_PATH, { signal: ctl.signal })
+    // ⚠️ 插件**不带口令**。对方服务端要是设了 GOK_*_TOKEN，这里就会撞 401。
+    //    而插件没地方填口令 —— 所以别说「口令不对」（用户没法改），
+    //    直接告诉他一条走得通的路：让对方去掉那个口令。
+    if (r.status === 401) {
+      return { ok: false, message: '这个服务设了口令，插件连不上（让对方去掉服务端口令）' }
+    }
     const data = await r.json().catch(() => null)
     if (!data?.ok) {
       return {
@@ -119,10 +120,9 @@ const lastReport = new Map()
  *    真没有的话，下一次查询会回「账号不在登录态池子里」，那是更准的信号。
  *
  * @param {string} base 服务地址（观战 / 消息各自的）
- * @param {string} [token] 该服务的口令（服务端设了 GOK_*_TOKEN 时才要）
  * @param {{force?: boolean, timeout?: number}} [opts]
  */
-export async function reportRemoteAccounts (base, token, { force = false, timeout = 8000 } = {}) {
+export async function reportRemoteAccounts (base, { force = false, timeout = 8000 } = {}) {
   const url = String(base || '').replace(/\/+$/, '')
   if (!url || !isRemoteBase(url)) return { ok: true, skipped: 'local' }
 
@@ -139,15 +139,9 @@ export async function reportRemoteAccounts (base, token, { force = false, timeou
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeout)
   try {
-    // ⚠️ 两个口令头都带上：同一个函数服务观战和消息两个服务端，
-    //    各看各的那个头（x-watch-token / x-im-token），多余的不会有害。
-    const secret = String(token || '').trim()
     const r = await fetch(`${url}/api/accounts`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(secret ? { 'X-Watch-Token': secret, 'X-Im-Token': secret } : {})
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accounts }),
       signal: ctl.signal
     })

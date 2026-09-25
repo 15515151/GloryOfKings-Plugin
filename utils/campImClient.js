@@ -32,19 +32,14 @@ export function apiBase () {
  * @param {{method?: string, body?: object|null, timeout?: number}} [opts]
  */
 export async function callApi (path, { method = 'GET', body = null, timeout = 15000 } = {}) {
-  await reportRemoteAccounts(apiBase(), cfg().campImToken)
+  await reportRemoteAccounts(apiBase())
 
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeout)
   try {
-    // 服务端设了 GOK_IM_TOKEN 时所有 /api/* 都要带口令，不然一律 401
-    const secret = String(cfg().campImToken || '').trim()
     const r = await fetch(apiBase() + path, {
       method,
-      headers: {
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(secret ? { 'X-Im-Token': secret } : {})
-      },
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal: ctl.signal
     })
@@ -108,6 +103,6 @@ export function serviceDownText (error) {
   const hint = /abort|timeout/i.test(error?.message || '')
     ? '营地消息服务没响应'
     : '营地消息服务没在跑'
-  return `${hint}\n用别人部署好的：请主人发 #营地消息连接 <地址> [口令]（地址找部署方要）；` +
+  return `${hint}\n用别人部署好的：请主人发 #营地消息连接 <地址>（地址找部署方要）；` +
     '自己装一套：进群 972915804 找主人要部署地址和令牌，请主人发 #营地消息接入 <地址> <令牌>'
 }

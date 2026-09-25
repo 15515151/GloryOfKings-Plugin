@@ -110,19 +110,14 @@ function myWatchers (e) {
  *    「扫码登录成功、一发观战却查不到好友」。本机地址会自动跳过，不多花请求。
  */
 async function callApi (path, { method = 'GET', body = null, timeout = 45000 } = {}) {
-  await reportRemoteAccounts(apiBase(), cfg().watchApiToken)
+  await reportRemoteAccounts(apiBase())
 
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeout)
   try {
-    // 服务端设了 GOK_WATCH_TOKEN 时所有 /api/* 都要带口令，不然一律 401
-    const secret = String(cfg().watchApiToken || '').trim()
     const r = await fetch(apiBase() + path, {
       method,
-      headers: {
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(secret ? { 'X-Watch-Token': secret } : {})
-      },
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal: ctl.signal
     })
@@ -543,7 +538,7 @@ export class WatchBattle extends plugin {
     const hint = /abort|timeout/i.test(error?.message || '')
       ? '观战服务没响应'
       : '观战服务没在跑'
-    return `${hint}\n用别人部署好的：请主人发 #营地观战连接 <地址> [口令]（地址找部署方要）；` +
+    return `${hint}\n用别人部署好的：请主人发 #营地观战连接 <地址>（地址找部署方要）；` +
       '自己装一套：进群 972915804 找主人要部署地址和令牌，请主人发 #营地观战接入 <地址> <令牌>'
   }
 

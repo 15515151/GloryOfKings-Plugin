@@ -297,15 +297,6 @@ export function supportGuoba () {
           }
         },
         {
-          field: 'config.watchApiToken',
-          label: '观战服务口令',
-          bottomHelpMessage: '服务端启动时设了 GOK_WATCH_TOKEN 才要填，没设就留空。连别人的服务端时填对方给的那个，跟地址一起用 #营地观战连接 <地址> <口令> 配。',
-          component: 'Input',
-          componentProps: {
-            placeholder: '留空 = 服务端没设口令'
-          }
-        },
-        {
           field: 'config.watchPublicUrl',
           label: '直播间对外地址',
           bottomHelpMessage: '填写群友能访问的地址（域名或公网 IP）和端口，如 http://abc.com:8899，并放行防火墙/安全组对应端口。使用 https 时先配置 HTTPS 反向代理；需要 CDN 直连时，再配置下方「观战 CDN（https）」。',
@@ -334,15 +325,6 @@ export function supportGuoba () {
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'
-          }
-        },
-        {
-          field: 'config.campImToken',
-          label: '营地消息服务口令',
-          bottomHelpMessage: '服务端启动时设了 GOK_IM_TOKEN 才要填，没设就留空。连别人的服务端时填对方给的那个，跟地址一起用 #营地消息连接 <地址> <口令> 配。',
-          component: 'Input',
-          componentProps: {
-            placeholder: '留空 = 服务端没设口令'
           }
         },
         {

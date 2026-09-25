@@ -115,7 +115,7 @@ export class CampImDeploy extends plugin {
         // ⭐ 连**别人已经部署好的**营地消息服务：只填地址，本机不下载、不部署。
         //    ⚠️ 和上面那条是两条完全不同的路：接入的地址是**分发服务**，
         //    连接的地址是**营地消息服务**本身。
-        { reg: '^#营地消息连接\\s+(\\S+)(?:\\s+(\\S+))?$', fnc: 'connectRemote', permission: 'master' },
+        { reg: '^#营地消息连接\\s+(\\S+)$', fnc: 'connectRemote', permission: 'master' },
         { reg: '^#营地消息部署$', fnc: 'deploy', permission: 'master' },
         { reg: '^#营地消息服务$', fnc: 'status', permission: 'master' }
       ]
@@ -162,42 +162,40 @@ export class CampImDeploy extends plugin {
   /* -------------------------------------------------------- 连远端 */
 
   /**
-   * `#营地消息连接 <地址> [口令]` —— 用**别人已经部署好的**营地消息服务。
+   * `#营地消息连接 <地址>` —— 用**别人已经部署好的**营地消息服务。
    *
    * 和「接入」是两条完全不同的路：
    *   · `#营地消息接入 <分发地址> <令牌>` = 从分发服务下代码，在**本机**装一套
-   *   · `#营地消息连接 <消息地址> [口令]` = 直接用别人跑着的那一套，本机什么都不装
+   *   · `#营地消息连接 <消息地址>` = 直接用别人跑着的那一套，本机什么都不装
    *
    * ⚠️ 连远端之后本机**不需要** pm2，也不会有任何本机进程：每个号的 ws 长连接都由
-   *    对方那台机器挂着（代价是对方能看到你的营地带账号凭证 —— 只连信得过的部署方）。
+   *    对方那台机器挂着（代价是对方能看到你的营地账号凭证 —— 只连信得过的部署方）。
    *
    * ⚠️ 对方的服务端必须能**收下你的账号**：登录态（userSig / userKey）只在**你这台机器**上
    *    （对方的 AuthPool.json 里没有）。所以这里会把你的全局账号递过去
    *    （只进对方内存、**不在对方落盘**）。对方要是老版本，这里会明确提示要更新。
    */
   async connectRemote (e) {
-    const m = /^#营地消息连接\s+(\S+)(?:\s+(\S+))?$/.exec(String(e.msg || '').trim())
-    if (!m) return e.reply('格式：#营地消息连接 <地址> [口令]', shouldQuote())
+    const m = /^#营地消息连接\s+(\S+)$/.exec(String(e.msg || '').trim())
+    if (!m) return e.reply('格式：#营地消息连接 <地址>', shouldQuote())
 
     const url = normalizeBase(m[1])
-    const token = (m[2] || '').trim()
 
     if (!/^https?:\/\//i.test(url)) {
       return e.reply('地址要以 http:// 或 https:// 开头', shouldQuote())
     }
 
-    // 先试连再落盘 —— 地址或口令写错了要当场知道
-    const probe = await probeRemoteStatus(url, token)
+    // 先试连再落盘 —— 地址写错了要当场知道
+    const probe = await probeRemoteStatus(url)
     if (!probe.ok) {
-      return e.reply(`${probe.message}\n地址和口令核对一下再发一次`, shouldQuote())
+      return e.reply(`${probe.message}\n地址核对一下再发一次`, shouldQuote())
     }
 
     Config.modify('config', 'campImApiUrl', url)
-    Config.modify('config', 'campImToken', token)
     logger.mark(`[${PluginName}] 已连接远端营地消息服务：${url}`)
 
     // 把自己的账号递过去：对方池子里还没有它们，不递就是「登录成功却收不到消息」
-    const report = await reportRemoteAccounts(url, token, { force: true })
+    const report = await reportRemoteAccounts(url, { force: true })
 
     const lines = ['✅ 已连接这个营地消息服务', '', `对方池子里的账号：${probe.accounts} 个`]
     if (!report.ok) {
