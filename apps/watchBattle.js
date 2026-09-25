@@ -23,6 +23,7 @@ import { AT_HEAD, stripAtText } from '../utils/atTarget.js'
 import { getImgType, shouldQuote } from '#utils'
 import { Config } from '#components'
 import authStore from '../utils/authStore.js'
+import { reportRemoteAccounts } from '../utils/remoteAccounts.js'
 
 /** 配置读取。改成配置项后不用重启（Config 挂了 chokidar） */
 function cfg () {
@@ -101,14 +102,27 @@ function myWatchers (e) {
     .filter(Boolean)
 }
 
-/** 调服务接口。服务没起来会抛，调用方统一兜住 */
+/**
+ * 调服务接口。服务没起来会抛，调用方统一兜住。
+ *
+ * ⚠️ 连的是**别人的**服务端时，每次调用前先把本机的营地账号递过去
+ *    （见 utils/remoteAccounts.js）—— 对方的池子里没有这些号，不递就是
+ *    「扫码登录成功、一发观战却查不到好友」。本机地址会自动跳过，不多花请求。
+ */
 async function callApi (path, { method = 'GET', body = null, timeout = 45000 } = {}) {
+  await reportRemoteAccounts(apiBase(), cfg().watchApiToken)
+
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeout)
   try {
+    // 服务端设了 GOK_WATCH_TOKEN 时所有 /api/* 都要带口令，不然一律 401
+    const secret = String(cfg().watchApiToken || '').trim()
     const r = await fetch(apiBase() + path, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(secret ? { 'X-Watch-Token': secret } : {})
+      },
       body: body ? JSON.stringify(body) : undefined,
       signal: ctl.signal
     })
@@ -529,8 +543,8 @@ export class WatchBattle extends plugin {
     const hint = /abort|timeout/i.test(error?.message || '')
       ? '观战服务没响应'
       : '观战服务没在跑'
-    return `${hint}\n还没装的话：进群 972915804 找主人要部署地址和令牌，然后请主人发 #营地观战接入 <地址> <令牌>；` +
-      '也可以在锅巴「王者荣耀 → 服务端接入」里填「分发服务地址」和「接入令牌」'
+    return `${hint}\n用别人部署好的：请主人发 #营地观战连接 <地址> [口令]（地址找部署方要）；` +
+      '自己装一套：进群 972915804 找主人要部署地址和令牌，请主人发 #营地观战接入 <地址> <令牌>'
   }
 
   async shot (view) {

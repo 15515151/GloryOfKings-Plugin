@@ -290,10 +290,19 @@ export function supportGuoba () {
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '观战要另跑一个后端进程（负责取直播流、录像），插件通过这个地址指挥它。自己部署：先接入分发服务（见上面「服务端接入」），再发 #营地观战部署；用别人部署好的：直接发 #营地观战连接 <地址>，本机什么都不用装。换地址改这里也行，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
+          }
+        },
+        {
+          field: 'config.watchApiToken',
+          label: '观战服务口令',
+          bottomHelpMessage: '服务端启动时设了 GOK_WATCH_TOKEN 才要填，没设就留空。连别人的服务端时填对方给的那个，跟地址一起用 #营地观战连接 <地址> <口令> 配。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '留空 = 服务端没设口令'
           }
         },
         {
@@ -321,10 +330,19 @@ export function supportGuoba () {
         {
           field: 'config.campImApiUrl',
           label: '营地消息服务地址',
-          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端接入」那一栏）。换成别的端口改这里即可，不用重启云崽。',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（给每个营地号挂长连接收消息），插件通过这个地址指挥它。自己部署：先接入分发服务（见上面「服务端接入」），再发 #营地消息部署；用别人部署好的：直接发 #营地消息连接 <地址>，本机什么都不用装。换地址改这里也行，不用重启云崽。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'
+          }
+        },
+        {
+          field: 'config.campImToken',
+          label: '营地消息服务口令',
+          bottomHelpMessage: '服务端启动时设了 GOK_IM_TOKEN 才要填，没设就留空。连别人的服务端时填对方给的那个，跟地址一起用 #营地消息连接 <地址> <口令> 配。',
+          component: 'Input',
+          componentProps: {
+            placeholder: '留空 = 服务端没设口令'
           }
         },
         {
