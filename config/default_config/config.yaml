@@ -25,6 +25,12 @@ groupWeeklyReportCron: '0 34 21 * * 0'
 groupMonthlyReportCron: '0 18 23 28-31 * *'
 #*回复时是否引用触发指令那条消息
 quoteReply: true
+#*出图格式：jpeg / png / webp。插件所有出图指令（战绩、主页、皮肤墙、帮助面板…）统一走它，
+#*实现在 utils/imageType.js，锅巴「出图 → 输出图片类型」对应这一项。
+#*⚠️ 微信（ComWeChat）适配器下别填 webp：微信的图片接口不认 webp，会把它降级成「文件」
+#*发出去 —— 群里收到的是 xxx.webp 文件卡片，不是图（2026-09-24 实测）。
+#*QQ / OneBot 等平台用 webp 能省三成左右体积。填了别的值一律按 jpeg 处理。
+imgType: jpeg
 #*图片缓存目录（data/imgCache）的容量上限，单位 MB。填 0 = 不限量。
 #*单张图平均 490KB，#皮肤墙 / #全部皮肤 一次会拉几百张，几个人轮着查就是几百 MB；
 #*7 天过期只管时间管不住量，超出上限时按下载时间从旧到新削减

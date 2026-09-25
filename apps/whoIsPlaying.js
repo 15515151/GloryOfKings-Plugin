@@ -34,7 +34,7 @@ import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { loadPushList, subGroups, getHeroNameMap, normalizeName, ONLINE_LABEL, collectSnapshot } from '../utils/pushStore.js'
 import { membersOfGroup, isIndexReady, refreshGroupIndex } from '../utils/groupIndex.js'
 import { mapConcurrent } from '../utils/parallel.js'
-import { Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser, isProfileHidden, getCurrentId, ApiService } from '#utils'
+import { getImgType, Button, shouldQuote, getUserAvatar, getGroupAvatar, isBlackUser, isProfileHidden, getCurrentId, ApiService } from '#utils'
 import { heroIconUrl } from '../utils/reportStore.js'
 
 /** 快照超过这个时长就在文案里标「数据较旧」，单位毫秒。对着常驻轮询那档封顶（十分钟一轮）定的 */
@@ -324,7 +324,7 @@ export class WhoIsPlaying extends plugin {
   async shot (e, { playing, justEnded, inGameIdle, online, offline, unknown }, here) {
     try {
       return await puppeteer.screenshot('WhoIsPlaying', {
-        imgType: 'webp',
+        imgType: getImgType(),
         tplFile: 'plugins/GloryOfKings-Plugin/resources/html/WhoIsPlaying.html',
         // 模板的 CSS / 字体都靠 {{_res_path}} 拼相对路径，漏了这项样式表 404，出的是纯文字图
         _res_path: '../../../plugins/GloryOfKings-Plugin/resources/',
