@@ -84,6 +84,10 @@ watchApiUrl: 'http://127.0.0.1:8899'
 #*留空 = 用上面那个，但 127.0.0.1 只有本机能开，群友点了是空的。
 #*部署时一定填成外网能访问的地址（域名或公网 IP），比如 http://xxx.com:8899
 watchPublicUrl: ''
+#*HTTPS 观众使用的观战 CDN Worker 地址，只填 https://域名[:端口]，不能带路径或参数。
+#*先按 gok-server/native/crates/gok-watch/README-CDN-HTTPS.md 部署 Worker；反向代理须传 X-Forwarded-Proto: https。
+#*保存后发 #营地观战部署 重启二进制生效。留空时 HTTPS 视频由本机转发，HTTP 观众仍直连营地 CDN。
+watchCdnHttps: ''
 #*开播引导：订阅了上下线提醒的人上线后，盯他进对局；进对局满 N 分钟且确认能看时，
 #*往群里发一条「要不要开播」的提示（不 @ 订阅者，群里谁都能发 #营地开播 开这一路）。
 #*只对「是某个全局账号好友」的号生效 —— 不是好友的话取流会被拒，提示了也开不了。

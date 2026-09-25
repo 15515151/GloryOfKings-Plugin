@@ -264,10 +264,19 @@ export function supportGuoba () {
         {
           field: 'config.watchPublicUrl',
           label: '直播间对外地址',
-          bottomHelpMessage: '发到群里、给群友点开的那个地址。留空 = 用上面的，但 127.0.0.1 只有本机能开，群友点了是白屏 —— 所以部署时一定填成外网能访问的（域名或公网 IP）+ 端口，比如 http://abc.com:8899。注意防火墙/安全组要放行这个端口。',
+          bottomHelpMessage: '发给群友的直播间地址。留空会用上面的服务地址，但 127.0.0.1 只有本机能打开。请填公网可访问的 HTTP 或 HTTPS 地址；使用 HTTPS 时需配置反向代理并传递 X-Forwarded-Proto: https，再按需配置下方的观战 CDN。',
           component: 'Input',
           componentProps: {
             placeholder: '留空 = 用上面的地址'
+          }
+        },
+        {
+          field: 'config.watchCdnHttps',
+          label: '观战 HTTPS CDN（Worker）',
+          bottomHelpMessage: '按 gok-server/native/crates/gok-watch/README-CDN-HTTPS.md 部署 Cloudflare Worker，填写纯 HTTPS 域名地址（可带端口，不能带路径或参数）。保存后发 #营地观战部署 生效；留空时 HTTPS 视频由本机转发，HTTP 观众仍直连营地 CDN。',
+          component: 'Input',
+          componentProps: {
+            placeholder: 'https://cdn.example.com'
           }
         },
         {

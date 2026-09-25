@@ -108,6 +108,30 @@ console.log(JSON.stringify({ host: env.GOK_WATCH_HOST, port: env.GOK_WATCH_PORT 
   }
 })
 
+test('currentEnv：观战 CDN 配置传给二进制，清空后关闭', () => {
+  const root = makeSandbox()
+  try {
+    ensurePluginRoot(root)
+    const out = run(root, `
+const { setFakeConfig } = await import('./fake-config.mjs')
+const { currentEnv } = await import('./utils/service.js')
+process.env.GOK_WATCH_CDN_HTTPS = 'https://stale.example.org'
+setFakeConfig({ watchCdnHttps: ' https://cdn.example.org/ ' })
+const configured = currentEnv('watch').GOK_WATCH_CDN_HTTPS
+setFakeConfig({ watchCdnHttps: '' })
+const cleared = currentEnv('watch').GOK_WATCH_CDN_HTTPS
+console.log(JSON.stringify({ configured, cleared }))
+`)
+    assert.ok(out.ok, out.stderr)
+    assert.deepEqual(JSON.parse(out.stdout), {
+      configured: 'https://cdn.example.org/',
+      cleared: ''
+    })
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('servicePort：从配置的服务地址抠端口，抠不到用默认', () => {
   const root = makeSandbox()
   try {

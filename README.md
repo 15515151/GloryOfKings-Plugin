@@ -187,7 +187,9 @@ flowchart TD
 #营地观战部署 / #营地观战服务     # 更新代码 / 看进程、ffmpeg、对外地址配好没
 ```
 
-也可在锅巴「王者荣耀 → 服务端接入」填写同一个服务地址和接入令牌，然后发 `#营地观战部署` 或 `#营地消息部署`。令牌属于凭证，使用指令时请私聊机器人。观战对外地址应填写群友能访问的 HTTP 地址；若使用 HTTPS，先配置反向代理。
+也可在锅巴「王者荣耀 → 服务端接入」填写同一个服务地址和接入令牌，然后发 `#营地观战部署` 或 `#营地消息部署`。令牌属于凭证，使用指令时请私聊机器人。观战对外地址应填写群友能访问的地址；若使用 HTTPS，先配置反向代理，并传递 `X-Forwarded-Proto: https`。
+
+HTTPS 直播默认由本机转发。若要让 HTTPS 观众也走 CDN，可按 [gok-watch 的 CDN 说明](https://github.com/cchanlan/gok-server/blob/server-github/native/crates/gok-watch/README-CDN-HTTPS.md) 部署 Cloudflare Worker，在锅巴「营地观战 → 观战 HTTPS CDN（Worker）」填写 Worker 的 HTTPS 域名，再发 `#营地观战部署` 重启服务。只填写域名地址（可带端口），不要带路径或参数。HTTP 观众仍直连营地 CDN；清空此项并重新部署后，HTTPS 视频恢复由本机转发。
 
 ### 营地消息
 

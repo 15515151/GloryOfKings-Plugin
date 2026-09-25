@@ -221,7 +221,7 @@ export function installedState (kind) {
  *    （`gok-im/src/config.rs`），和观战不是一回事 —— 不传就会读到一个空的池子。
  *    显式传还让两个服务读**同一个文件**，和现有 JS 版一致，已登录的号不会「掉登录」。
  */
-export function buildEnv ({ kind, target, baseUrl, token, port, bindHost, bindAll = false }) {
+export function buildEnv ({ kind, target, baseUrl, token, port, bindHost, bindAll = false, cdnHttps = '' }) {
   const info = kindInfo(kind)
   const env = {
     ...process.env,
@@ -234,6 +234,9 @@ export function buildEnv ({ kind, target, baseUrl, token, port, bindHost, bindAl
     GOK_AUTH_POOL: path.join(PluginData, 'AuthPool.json'),
     [info.portEnv]: String(port)
   }
+
+  // gok-watch 会校验此值是否为纯 HTTPS origin；空串显式关闭，避免继承旧进程环境。
+  if (kind === 'watch') env.GOK_WATCH_CDN_HTTPS = String(cdnHttps || '').trim()
 
   // 观战二进制默认绑 `::`（双栈）且**没有回退**：IPv6 被禁的机器上它会直接起不来。
   //
@@ -258,7 +261,8 @@ export function currentEnv (kind) {
     token,
     port: servicePort(kind),
     bindHost: rule.host,
-    bindAll: rule.bindAll
+    bindAll: rule.bindAll,
+    cdnHttps: kind === 'watch' ? cfg().watchCdnHttps : ''
   })
 }
 
