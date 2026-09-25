@@ -221,6 +221,11 @@ export class WatchDeploy extends plugin {
     }
 
     Config.modify('config', 'watchApiUrl', url)
+    // ⚠️ 「直播间对外地址」也得跟着指过去 —— 它才是拼给群友点的那个链接
+    //    （见 watchBattle.js 的 publicBase，空时回退到服务地址）。
+    //    不一起改的话，链接还指着本机/上一个服务：本机根本没在播对方那台机器上的那一场，
+    //    群友点开就是白屏。这是「切了服务端但链接没跟过去」最容易踩的一个坑。
+    Config.modify('config', 'watchPublicUrl', url)
     logger.mark(`[${PluginName}] 已连接远端观战服务：${url}`)
 
     // 把自己的账号递过去：对方池子里还没有它们，不递就是「登录成功却查不到好友」
@@ -234,6 +239,11 @@ export class WatchDeploy extends plugin {
         '让那台机器的主人发一次 #营地观战部署 更新后，再发一遍本条指令'
       )
     }
+    lines.push(
+      '',
+      '⚠️ 直播间链接也跟着指到这个地址了。群友点不开的话，让对方给一个外网能访问的地址，',
+      '填进锅巴「王者荣耀 → 营地观战」里的「直播间对外地址」'
+    )
     lines.push('', '看谁在打：发 #营地观战')
     return e.reply(lines.join('\n'), shouldQuote())
   }
