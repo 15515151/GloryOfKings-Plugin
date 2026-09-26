@@ -255,7 +255,7 @@ export function supportGuoba () {
         {
           field: 'config.watchApiUrl',
           label: '观战服务地址',
-          bottomHelpMessage: '观战要另跑一个后端进程（按平台分发的原生二进制，负责取直播流、录像），插件通过这个地址指挥它。装好它：发一句 #营地观战部署（要先接入分发服务，见上面「服务端接入」那一栏）。换端口改这里即可，不用重启云崽（端口走 GOK_WATCH_PORT 传给子进程，下次部署/重装起进程时生效）。填回环地址时插件会把子进程设成只监听本机：二进制默认绑 :: 双栈，IPv6 被禁的机器上会起不来；要放别处（反代直连）就填那个地址。',
+          bottomHelpMessage: '观战要另跑一个后端进程（按平台分发的原生二进制，负责取直播流、录像），插件通过这个地址指挥它。自己部署：先接入分发服务（见上面「服务端接入」），再发 #营地观战部署；用别人部署好的：直接发 #营地观战连接 <地址>，本机什么都不用装。换端口或换地址改这里即可，不用重启云崽（端口走 GOK_WATCH_PORT 传给子进程）。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8899'
@@ -286,7 +286,7 @@ export function supportGuoba () {
         {
           field: 'config.campImApiUrl',
           label: '营地消息服务地址',
-          bottomHelpMessage: '营地消息要另跑一个后端进程（按平台分发的原生二进制，给每个营地号挂长连接收消息），插件通过这个地址指挥它。装好它：发一句 #营地消息部署（要先接入分发服务，见上面「服务端接入」那一栏）。换端口改这里即可，不用重启云崽（端口走 GOK_IM_PORT 传给子进程）。二进制坏了发 #营地消息重装 强制重下。',
+          bottomHelpMessage: '营地消息要另跑一个后端进程（按平台分发的原生二进制，给每个营地号挂长连接收消息），插件通过这个地址指挥它。自己部署：先接入分发服务（见上面「服务端接入」），再发 #营地消息部署；用别人部署好的：直接发 #营地消息连接 <地址>，本机什么都不用装。换端口或换地址改这里即可，不用重启云崽（端口走 GOK_IM_PORT 传给子进程）。二进制坏了发 #营地消息重装 强制重下。',
           component: 'Input',
           componentProps: {
             placeholder: '默认 http://127.0.0.1:8900'
@@ -387,6 +387,28 @@ export function supportGuoba () {
           component: 'Input',
           componentProps: {
             placeholder: "默认 0 13 5 * * *（秒 分 时 日 月 周）"
+          }
+        },
+        {
+          component: 'Divider',
+          label: '出图'
+        },
+        {
+          field: 'config.imgType',
+          label: '输出图片类型',
+          helpMessage: '插件所有出图指令（战绩 / 主页 / 皮肤墙 / 帮助面板 / 营地消息卡片…）统一用这个格式',
+          bottomHelpMessage:
+            '插件 37 处出图统一读这一项，改完下次出图就生效，不用重启。' +
+            '⚠️ 选 WebP 之前先看你的适配器：微信（ComWeChat）的图片接口不认 webp，' +
+            '会把图降级成「文件」发出去 —— 群友收到的是 xxx.webp 文件卡片而不是图（2026-09-24 实测）。' +
+            'QQ / OneBot 等平台用 webp 能省三成左右体积。拿不准就保持 JPEG。',
+          component: 'Select',
+          componentProps: {
+            options: [
+              { label: 'JPEG（推荐，全平台通用）', value: 'jpeg' },
+              { label: 'PNG（无损，体积最大）', value: 'png' },
+              { label: 'WebP（体积小，微信下会变成文件）', value: 'webp' }
+            ]
           }
         },
         {

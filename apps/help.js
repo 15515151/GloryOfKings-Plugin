@@ -1,6 +1,6 @@
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
 import { renderMasterPanel } from '../utils/masterPanel.js'
-import { Button, shouldQuote } from '#utils'
+import { getImgType, Button, shouldQuote } from '#utils'
 
 const helpSections = [
   {
@@ -107,6 +107,7 @@ const helpSections = [
       { cmd: '#营地观战', args: '停 <编号>', desc: '停指定的一路（编号看 #营地观战 在播）' },
       { cmd: '#营地观战', args: '停 全部', desc: '停掉全部直播间，别人开的也会停（也认「全停」「关闭全部」「全关」「全部关」）' },
       { cmd: '#营地开播', desc: '开「本群最近提示的那一场」——订阅上下线的人开局满几分钟后，群里会收到开播提示' },
+      { cmd: '#营地观战连接', args: '<地址>', desc: '用别人部署好的观战服务：只填地址，本机什么都不用装（地址找部署方要）——请主人发' },
       { cmd: '#营地观战接入', args: '<地址> <令牌>', desc: '一步接入并部署观战服务（地址和令牌进群 972915804 找主人要）——请主人发' },
       { cmd: '#营地观战部署', desc: '用已配好的地址和令牌部署 / 更新观战服务（按平台下发的原生二进制，跟着机器人进程，不保活）——请主人发' },
       { cmd: '#营地观战重装', desc: '强制重新下载安装观战服务（二进制坏了、或想强刷时用；平时部署是幂等的，版本没变只重启）——请主人发' },
@@ -126,6 +127,7 @@ const helpSections = [
       { cmd: '#营地消息', desc: '看服务状态、哪些号在线、还有多少条待处理' },
       { cmd: '#营地消息开', alias: ['#营地消息开启', '#营地消息打开', '#营地消息收'], desc: '让自己名下的营地号开始收消息（扫过的号默认只用来查询，要收得自己开）' },
       { cmd: '#营地消息关', alias: ['#营地消息关闭', '#营地消息停止', '#营地消息不收'], desc: '让自己名下的营地号不再收消息' },
+      { cmd: '#营地消息连接', args: '<地址>', desc: '用别人部署好的营地消息服务：只填地址，本机什么都不用装（地址找部署方要）——请主人发' },
       { cmd: '#营地消息接入', args: '<地址> <令牌>', desc: '一步接入并部署营地消息服务（地址和令牌进群 972915804 找主人要）——请主人发' },
       { cmd: '#营地消息部署', desc: '用已配好的地址和令牌部署 / 更新营地消息服务（按平台下发的原生二进制，跟着机器人进程，不保活）——请主人发' },
       { cmd: '#营地消息重装', desc: '强制重新下载安装营地消息服务（二进制坏了、或想强刷时用）——请主人发' },
@@ -265,7 +267,7 @@ export class Help extends plugin {
       const inventoryImage = await puppeteer.screenshot('help', {
         tplFile: 'plugins/GloryOfKings-Plugin/resources/html/help.html',
         _res_path: '../../../plugins/GloryOfKings-Plugin/resources/',
-        imgType: 'webp',
+        imgType: getImgType(),
         sections,
         keyword,
         generatedAt: new Date().toLocaleString()
