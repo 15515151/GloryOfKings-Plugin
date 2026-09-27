@@ -19,6 +19,7 @@
  * 服务没起来 / 没装 ffmpeg 时，这条指令会给出人话提示，而不是抛栈。
  */
 import puppeteer from '../../../lib/puppeteer/puppeteer.js'
+import common from '../../../lib/common/common.js'
 import { AT_HEAD, stripAtText } from '../utils/atTarget.js'
 import { getImgType, shouldQuote } from '#utils'
 import { Config } from '#components'
@@ -441,8 +442,6 @@ export class WatchBattle extends plugin {
       )
     }
 
-    await e.reply(`正在开 ${picked.length} 路直播，稍等…`, shouldQuote())
-
     // 并发开：直连模式不用取流、不用轮询，每路就一次请求
     const results = await Promise.all(picked.map(async (it) => {
       try {
@@ -473,11 +472,12 @@ export class WatchBattle extends plugin {
       const tail = [it.nick, it.desc].filter(Boolean).join(' ')
       return `${i + 1}. ${head} ${tail}\n${masterLink(it.rid)}`
     })
-    await e.reply(
-      `大神观战 · 共 ${ok.length} 路\n${lines.join('\n')}\n`
-      + '黑屏或一直「重连中」，把链接开头的 http 改成 https 再打开',
-      shouldQuote()
+    const forwardMsg = await common.makeForwardMsg(
+      e,
+      [...lines, '黑屏或一直「重连中」，把链接开头的 http 改成 https 再打开'],
+      `大神观战 · 共 ${ok.length} 路`
     )
+    await e.reply(forwardMsg)
   }
 
   /**
